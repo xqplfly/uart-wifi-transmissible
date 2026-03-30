@@ -273,9 +273,6 @@ void runServerMode() {
         uint8_t buf[256];
         size_t readBytes = serverClients[i].read(buf, toRead);
 
-        // 先写入服务器调试串口显示
-        Serial.write((char*)buf, readBytes);
-        
         // 写入网页串口显示缓冲区（全局）
         noInterrupts();
         appendToSerialBuffer((char*)buf, readBytes);
@@ -288,8 +285,11 @@ void runServerMode() {
           }
         }
         
-        // 透传到服务器UART2（可选）
-        uart_write_bytes(UART_NUM_2, (const char *)buf, readBytes);
+        // 只有选中客户端时才透传到UART2和调试串口
+        if (selectedClientIndex >= 0 && selectedClientIndex == i) {
+          Serial.write((char*)buf, readBytes);
+          uart_write_bytes(UART_NUM_2, (const char *)buf, readBytes);
+        }
 
         // 记录日志到SD卡
         for (size_t j = 0; j < readBytes; j++) {
