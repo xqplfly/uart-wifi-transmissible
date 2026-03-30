@@ -1264,8 +1264,12 @@ void handleSerialPage(WiFiClient client) {
   html += "  }";
   html += "  document.getElementById('serialOutput').value = serialData[currentSource] || '';";
   html += "}";
+  html += "var isFetching = false;";
   html += "function fetchSerialData(){";
-  html += "  fetch('/serial/data?source=' + currentSource).then(r=>r.text()).then(data=>{";
+  html += "  if(isFetching) return;";
+  html += "  isFetching = true;";
+  html += "  fetch('/serial/data?source=' + currentSource,{cache: 'no-store'}).then(r=>r.text()).then(data=>{";
+  html += "    isFetching = false;";
   html += "    if(data.length > 0){";
   html += "      serialData[currentSource] += data;";
   html += "      if(serialData[currentSource].length > 50000){";
@@ -1276,12 +1280,12 @@ void handleSerialPage(WiFiClient client) {
   html += "      output.value = serialData[currentSource];";
   html += "      if(wasAtBottom){";
   html += "        output.scrollTop = output.scrollHeight;";
-  html += "        }";
   html += "      }";
   html += "      var now = new Date();";
   html += "      document.getElementById('lastUpdate').textContent = now.toLocaleTimeString();";
   html += "      document.getElementById('bufferStatus').textContent = '缓冲区: ' + (serialData[currentSource] || '').length + ' 字符';";
-  html += "    });";
+  html += "    }";
+  html += "  }).catch(function(){isFetching = false;});";
   html += "}";
   html += "function sendData(){";
   html += "  var input = document.getElementById('serialInput');";
