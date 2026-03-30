@@ -261,12 +261,34 @@ int sdQueueTail = 0;
 int sdQueueCount = 0;
 unsigned long lastSDWriteTime = 0;
 
+String getLogTimestamp() {
+  // 如果有RTC时间可以使用，应该先检查RTC
+  // 这里使用系统运行时间作为时间戳
+  unsigned long uptime = millis();
+  unsigned long seconds = uptime / 1000;
+  unsigned long hours = seconds / 3600;
+  unsigned long minutes = (seconds % 3600) / 60;
+  unsigned long secs = seconds % 60;
+  unsigned long ms = uptime % 1000;
+  
+  char buf[32];
+  snprintf(buf, sizeof(buf), "[%02lu:%02lu:%02lu.%03lu]", hours, minutes, secs, ms);
+  return String(buf);
+}
+
 bool enqueueSDLog(String data, String clientId, bool isServer) {
   if (!sdCardReady || data.length() == 0) return false;
   if (sdQueueCount >= SD_WRITE_QUEUE_SIZE) return false;
   
   // 过滤ANSI转义序列后再保存
   String filteredData = filterAnsiEscape(data);
+  
+  // 如果开启时间戳，在数据前添加时间
+  if (logWithTimestamp) {
+    String timestamp = getLogTimestamp();
+    filteredData = timestamp + " " + filteredData;
+  }
+  
   sdWriteQueue[sdQueueHead].data = filteredData;
   sdWriteQueue[sdQueueHead].clientId = clientId;
   sdWriteQueue[sdQueueHead].isServer = isServer;

@@ -172,6 +172,7 @@ bool webServerEnabled = true;
 String logFileName = "uart_log";  // 默认日志文件名
 String logFilePath = "";          // 日志文件完整路径
 bool logToSD = true;              // 是否记录到SD卡
+bool logWithTimestamp = false;    // 是否在每行日志添加时间戳
 unsigned long logFileSize = 0;    // 日志文件大小
 unsigned int logCount = 0;        // 日志条数
 

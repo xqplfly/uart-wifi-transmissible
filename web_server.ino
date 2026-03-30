@@ -740,6 +740,16 @@ void handleConfigPage(WiFiClient client) {
   html += "</select>";
   html += "</div>";
   
+  // 日志时间戳
+  html += "<div class='form-group'>";
+  html += "<label for='log_timestamp'>日志时间戳</label>";
+  html += "<select name='log_timestamp' id='log_timestamp'>";
+  html += String("<option value='1'") + (logWithTimestamp ? " selected" : "") + ">开启 - 每行日志添加时间</option>";
+  html += String("<option value='0'") + (!logWithTimestamp ? " selected" : "") + ">关闭</option>";
+  html += "</select>";
+  html += "<small style='color:#888;display:block;margin-top:5px;'>开启后在SD卡日志中每行数据前会添加时间戳 [HH:MM:SS.mmm]</small>";
+  html += "</div>";
+  
   // 保存按钮
   html += "<div class='form-group'>";
   html += "<input type='submit' value='保存配置'>";
@@ -774,11 +784,17 @@ void handleSaveConfig(WiFiClient client) {
   if (debugEnd == -1) debugEnd = postData.length();
   bool newDebugMode = postData.substring(debugIndex, debugEnd).toInt() == 1;
   
+  int tsIndex = postData.indexOf("log_timestamp=") + 14;
+  int tsEnd = postData.indexOf("&", tsIndex);
+  if (tsEnd == -1) tsEnd = postData.length();
+  bool newLogTimestamp = postData.substring(tsIndex, tsEnd).toInt() == 1;
+  
   // 保存配置
   currentMode = newMode;
   client_id = newClientId;
   uart2BaudRate = newBaud;
   debugMode = newDebugMode;
+  logWithTimestamp = newLogTimestamp;
   
   // 保存到EEPROM
   saveConfigToEEPROM();

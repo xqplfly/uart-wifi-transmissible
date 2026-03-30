@@ -84,12 +84,23 @@ void handleCommand(String command) {
     Serial.println("  TCP: " + String(tcpConnected ? "Connected" : "Disconnected"));
     Serial.println("  SD Card: " + String(sdCardReady ? "Ready" : "Not Ready"));
     Serial.println("  Log: " + logFileName + " (" + String(logCount) + " entries)");
+    Serial.println("  Log Timestamp: " + String(logWithTimestamp ? "ON" : "OFF"));
     Serial.println("  Battery: " + String(batteryVoltage) + "V" + (lowBattery ? " (Low)" : ""));
   } else if (command.startsWith("AT+LOGNAME ")) {
     String newName = command.substring(10);
     logFileName = newName;
     saveConfigToEEPROM();
     Serial.println("OK Log filename set to: " + logFileName);
+  } else if (command == "AT+LOGTIME=ON") {
+    logWithTimestamp = true;
+    saveConfigToEEPROM();
+    Serial.println("OK Log timestamp enabled");
+  } else if (command == "AT+LOGTIME=OFF") {
+    logWithTimestamp = false;
+    saveConfigToEEPROM();
+    Serial.println("OK Log timestamp disabled");
+  } else if (command == "AT+LOGTIME?") {
+    Serial.println("Log timestamp: " + String(logWithTimestamp ? "ON" : "OFF"));
   } else if (command.startsWith("AT+BAUD ")) {
     String baudStr = command.substring(8);
     unsigned long newBaud = baudStr.toInt();
@@ -349,6 +360,7 @@ void printHelp() {
   Serial.println("  AT+SELECT       - Show selectable client list");
   Serial.println("  AT+SELECT <id>  - Select client for transparent mode (-1 to cancel)");
   Serial.println("  AT+LOGNAME <name> - Set log filename");
+  Serial.println("  AT+LOGTIME=ON/OFF - Enable/disable timestamp in log");
   Serial.println("  AT+BAUD <rate>  - Set UART2 baud rate");
   Serial.println("  AT+DEBUG=ON/OFF - Enable/disable debug mode");
   Serial.println("  AT+RESTART      - Restart system");

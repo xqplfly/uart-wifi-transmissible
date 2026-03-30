@@ -23,6 +23,9 @@ void loadConfigFromEEPROM() {
     if (idBuffer[i] == 0 || idBuffer[i] == 255) break;
   }
   
+  // Load log timestamp setting
+  logWithTimestamp = (EEPROM.read(60) == 1);
+  
   Serial.println("Config loaded from EEPROM");
 }
 
@@ -40,6 +43,9 @@ void saveConfigToEEPROM() {
     EEPROM.write(EEPROM_CLIENT_ID_ADDR + i, client_id[i]);
   }
   EEPROM.write(EEPROM_CLIENT_ID_ADDR + client_id.length(), 0);
+  
+  // Save log timestamp setting
+  EEPROM.write(60, logWithTimestamp ? 1 : 0);
   
   EEPROM.commit();
   Serial.println("Config saved to EEPROM");
