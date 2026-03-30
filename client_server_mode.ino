@@ -1,4 +1,6 @@
 // ==================== Smart WiFi Config ====================
+extern int selectedClientIndex;
+
 void startConfigMode() {
   Serial.println("\nEntering WiFi config mode...");
   Serial.println("Please connect to WiFi: " + String(wifimanager_ssid));
