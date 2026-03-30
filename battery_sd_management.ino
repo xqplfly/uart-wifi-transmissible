@@ -64,11 +64,9 @@ void checkSDCardStatus() {
     if (!root) {
       sdCardReady = false;
       sdCardError = true;
-      if (lastSDCardReady) {
-        if (currentMode == MODE_SERVER) {
-          Serial.println("! SD card removed!");
-          Serial.println("! Logging paused");
-        }
+      if (lastSDCardReady && debugMode) {
+        Serial.println("! SD card removed!");
+        Serial.println("! Logging paused");
         for (int i = 0; i < 3; i++) {
           setLED(CRGB(255, 0, 0));
           delay(200);
@@ -82,7 +80,7 @@ void checkSDCardStatus() {
   } else {
     initSDCard();
     if (sdCardReady && !lastSDCardReady) {
-      if (currentMode == MODE_SERVER) {
+      if (debugMode) {
         Serial.println("! SD card reconnected!");
         Serial.println("! Logging resumed");
       }
