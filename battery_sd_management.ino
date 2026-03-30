@@ -58,24 +58,19 @@ void checkBattery() {
 // ==================== SD Card Status Check ====================
 void checkSDCardStatus() {
   static bool lastSDCardReady = sdCardReady;
+  static unsigned long lastCheck = 0;
+  
+  if (millis() - lastCheck < 5000) return;
+  lastCheck = millis();
 
   if (sdCardReady) {
-    File root = SD.open("/");
-    if (!root) {
+    if (!SD.exists("/")) {
       sdCardReady = false;
       sdCardError = true;
       if (lastSDCardReady && debugMode) {
         Serial.println("! SD card removed!");
         Serial.println("! Logging paused");
-        for (int i = 0; i < 3; i++) {
-          setLED(CRGB(255, 0, 0));
-          delay(200);
-          setLED(CRGB(0, 0, 0));
-          delay(200);
-        }
       }
-    } else {
-      root.close();
     }
   } else {
     initSDCard();
@@ -83,12 +78,6 @@ void checkSDCardStatus() {
       if (debugMode) {
         Serial.println("! SD card reconnected!");
         Serial.println("! Logging resumed");
-      }
-      for (int i = 0; i < 3; i++) {
-        setLED(CRGB(0, 255, 0));
-        delay(200);
-        setLED(CRGB(0, 0, 0));
-        delay(200);
       }
     }
   }

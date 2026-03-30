@@ -427,24 +427,33 @@ void loop() {
     checkSDCardStatus();
   }
   
-  // ========== 优先处理TCP数据（低延迟透传）==========
-  if (currentMode == MODE_CLIENT) {
-    runClientMode();
-  } else {
-    runServerMode();
-  }
+  // 低功耗功能已禁用
+  // if (!lowPowerMode) {
+  //   checkLowPowerCondition();
+  // }
   
-  // ========== UART2透传 (DMA RX -> TCP) =========
-  handleHighSpeedUARTWithWebBuffer();
-  
-  // ========== USB串口处理 (TCP -> UART2) =========
+  // 处理USB CDC串口（双向通信）
   handleUSBSerial();
   
-  // ========== Web服务器（低优先级）==========
+  // ========== UART2透传 ==========
+  handleHighSpeedUARTWithWebBuffer();  // UART2 RX → 调试串口 + TCP + Web缓冲区
+  
+  // 处理Web服务器（日志查看）
   handleWebServer();
   
-  // ========== SD卡写入 ==========
-  processSDWriteQueue();
+  // 根据模式执行不同逻辑（低功耗功能已禁用）
+  // if (!lowPowerMode) {
+    if (currentMode == MODE_CLIENT) {
+      runClientMode();
+      processSDWriteQueue();
+    } else {
+      runServerMode();
+      processSDWriteQueue();
+    }
+  // } else {
+  //   // 低功耗模式处理
+  //   handleLowPowerMode();
+  // }
   
   // 更新LED状态
   updateLEDStatus();
