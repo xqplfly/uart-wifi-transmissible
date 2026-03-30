@@ -145,6 +145,30 @@ void handleCommand(String command) {
     String indexStr = command.substring(10);
     int index = indexStr.toInt();
     selectClient(index);
+  } else if (command == "AT+CPU") {
+    // Display CPU and memory usage
+    Serial.println("\n=== CPU & Memory Status ===");
+    Serial.println("  CPU Frequency: " + String(ESP.getCpuFreqMHz()) + " MHz");
+    Serial.println("  CPU Cores: " + String(ESP.getChipCores()));
+    Serial.println("  Chip Model: " + String(ESP.getChipModel()));
+    Serial.println("  Chip Revision: " + String(ESP.getChipRevision()));
+    Serial.println("  Flash Size: " + String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB");
+    Serial.println("  Flash Speed: " + String(ESP.getFlashChipSpeed() / 1000000) + " MHz");
+    
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t totalHeap = ESP.getHeapSize();
+    Serial.println("  Heap Memory: " + String(freeHeap) + " / " + String(totalHeap) + " bytes");
+    Serial.println("  Heap Usage: " + String((totalHeap - freeHeap) * 100 / totalHeap) + "%");
+    
+    Serial.println("  Free Sketch Space: " + String(ESP.getFreeSketchSpace() / 1024) + " KB");
+    
+    #ifdef ARDUINO_ESP32S3_DEV
+    Serial.println("  PSRAM Size: " + String(ESP.getPsramSize() / (1024 * 1024)) + " MB");
+    Serial.println("  Free PSRAM: " + String(ESP.getFreePsram() / 1024) + " KB");
+    #endif
+    
+    Serial.println("  Uptime: " + String(millis() / 1000) + " seconds");
+    Serial.println("  WiFi Mode: " + String(WiFi.getMode() == WIFI_AP ? "AP" : (WiFi.getMode() == WIFI_STA ? "STA" : "AP+STA")));
   } else if (command == "AT+CLIENTS") {
     if (currentMode == MODE_SERVER) {
       int count = getConnectedClientCount();
@@ -320,6 +344,7 @@ void printHelp() {
   Serial.println("  AT+SWITCH       - Switch working mode");
   Serial.println("  AT+RESET        - Reset to default settings");
   Serial.println("  AT+STATUS       - Show system status");
+  Serial.println("  AT+CPU          - Show CPU & memory status");
   Serial.println("  AT+CLIENTS      - Show connected clients (server mode)");
   Serial.println("  AT+SELECT       - Show selectable client list");
   Serial.println("  AT+SELECT <id>  - Select client for transparent mode (-1 to cancel)");
