@@ -15,7 +15,7 @@ volatile uint16_t uart2RingHead = 0;
 volatile uint16_t uart2RingTail = 0;
 volatile bool uart2RingOverflow = false;
 
-#define TCP_SEND_BUFFER_SIZE 1024
+#define TCP_SEND_BUFFER_SIZE 4096
 uint8_t tcpSendBuffer[TCP_SEND_BUFFER_SIZE];
 uint16_t tcpSendBufferLen = 0;
 
@@ -65,7 +65,7 @@ void uartRxTask(void *arg) {
               filteredBuf[filteredLen++] = buf[i];
             }
             
-            // 写入Serial
+              // 写入Serial
             Serial.write((char*)filteredBuf, filteredLen);
             
             // 写入Web串口显示缓冲区（只在非透传模式下写入）
@@ -80,6 +80,8 @@ void uartRxTask(void *arg) {
                   tcpSendBuffer[tcpSendBufferLen++] = filteredBuf[i];
                 }
               }
+              // 立即刷新TCP缓冲区，减少延迟
+              flushTCPBuffer();
             }
             
             // 客户端模式：记录发送的日志到SD卡
