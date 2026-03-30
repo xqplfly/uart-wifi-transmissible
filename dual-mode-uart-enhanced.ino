@@ -406,7 +406,7 @@ void setup() {
     Serial.println("电池电压: " + String(batteryVoltage) + "V");
     Serial.println("========================================\n");
     
-    printHelp();
+    Serial.println("Type AT+HELP for command list\n");
   }
 }
 
