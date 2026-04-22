@@ -15,10 +15,42 @@ void handleUSBSerial() {
   
   while (Serial.available()) {
     char incoming = Serial.read();
-    
-    // 服务器模式：发送到选中的客户端（TCP），客户端会转发到其UART2
-    if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
-      queueTCPWrite((uint8_t)incoming);
+
+    bool atCandidate = inputBuffer.startsWith("AT") || inputBuffer.startsWith("at");
+    bool collectingAT = atCandidate || inputBuffer.length() == 0;
+
+    if (collectingAT && incoming != '\r' && incoming != '\n') {
+      inputBuffer += incoming;
+      if (!(inputBuffer.startsWith("AT") || inputBuffer.startsWith("at"))) {
+        for (int i = 0; i < inputBuffer.length(); i++) {
+          if (txLen >= (int)sizeof(txBuffer)) {
+            uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
+            txLen = 0;
+          }
+          txBuffer[txLen++] = (uint8_t)inputBuffer[i];
+          if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
+            queueTCPWrite((uint8_t)inputBuffer[i]);
+          }
+        }
+        inputBuffer = "";
+      }
+      continue;
+    }
+
+    if (inputBuffer.length() > 0 && (inputBuffer.startsWith("AT") || inputBuffer.startsWith("at"))) {
+      if (incoming == '\n' || incoming == '\r') {
+        String command = inputBuffer;
+        command.trim();
+        handleCommand(command);
+        inputBuffer = "";
+        continue;
+      }
+
+      inputBuffer += incoming;
+      if (inputBuffer.length() > UART_BUFFER_SIZE) {
+        inputBuffer = "";
+      }
+      continue;
     }
 
     if (txLen >= (int)sizeof(txBuffer)) {
@@ -26,37 +58,22 @@ void handleUSBSerial() {
       txLen = 0;
     }
 
-    if (txLen < (int)sizeof(txBuffer)) {
-      txBuffer[txLen++] = (uint8_t)incoming;
+    txBuffer[txLen++] = (uint8_t)incoming;
+    if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
+      queueTCPWrite((uint8_t)incoming);
     }
-    
-    // 客户端模式：记录发送的日志到SD卡
+
     if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
       if (incoming == '\n') {
-        if (inputBuffer.length() > 1) {
-          enqueueSDLog(inputBuffer, client_id, false);
+        String command = inputBuffer;
+        command.trim();
+        if (command.length() > 0) {
+          enqueueSDLog(command, client_id, false);
         }
         inputBuffer = "";
       } else if (incoming != '\r') {
         inputBuffer += incoming;
       }
-    }
-    
-    // 收集字符用于AT命令检查
-    if (!(currentMode == MODE_CLIENT && logToSD && sdCardReady)) {
-      inputBuffer += incoming;
-    }
-    
-    // 检查是否是换行或回车（命令结束）
-    if (incoming == '\n' || incoming == '\r') {
-      String command = inputBuffer;
-      command.trim();
-      
-      // 检查是否是AT命令
-      if (command.startsWith("AT") || command.startsWith("at")) {
-        handleCommand(command);
-      }
-      inputBuffer = "";
     }
     
     // 限制缓冲区大小
@@ -326,7 +343,7 @@ String getDateString() {
 // ==================== Power Control Functions ====================
 void powerOn() {
   Serial.println("-> Power ON operation...");
-  // Pull GPIO low for 1 second in power-off mode
+  // Pull GPIO low for 1 second
   digitalWrite(POWER_CONTROL_PIN, LOW);
   delay(1000);
   digitalWrite(POWER_CONTROL_PIN, HIGH);
@@ -335,17 +352,16 @@ void powerOn() {
 
 void powerOff() {
   Serial.println("-> Power OFF operation...");
-  // Pull GPIO low for 5 seconds to force power off
-  Serial.println("!! Executing power off, pulling GPIO low for 5 seconds...");
+  // Pull GPIO low for 1 second
   digitalWrite(POWER_CONTROL_PIN, LOW);
-  delay(5000);
+  delay(1000);
   digitalWrite(POWER_CONTROL_PIN, HIGH);
   Serial.println("OK Power OFF operation complete");
 }
 
 void triggerShutdown() {
   Serial.println("-> Trigger shutdown hint...");
-  // Pull low for 1 second as button hint
+  // Pull GPIO low for 1 second
   digitalWrite(POWER_CONTROL_PIN, LOW);
   delay(1000);
   digitalWrite(POWER_CONTROL_PIN, HIGH);
@@ -354,9 +370,9 @@ void triggerShutdown() {
 
 void resetCPU() {
   Serial.println("-> Reset operation...");
-  // Pull low to reset
+  // Pull GPIO low for 1 second
   digitalWrite(RESET_CONTROL_PIN, LOW);
-  delay(100);
+  delay(1000);
   digitalWrite(RESET_CONTROL_PIN, HIGH);
   Serial.println("OK Reset operation complete");
 }

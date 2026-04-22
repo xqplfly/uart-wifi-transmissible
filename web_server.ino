@@ -115,7 +115,7 @@ void handleWebServer() {
   } else if (requestLine.indexOf("GET /config ") >= 0) {
     handleConfigPage(client);
   } else if (requestLine.indexOf("POST /saveconfig") >= 0) {
-    handleSaveConfig(client);
+    handleSaveConfig(client, postBody);
   } else if (requestLine.indexOf("GET /download") >= 0) {
     handleDownloadLog(client, request);
   } else if (requestLine.indexOf("GET /clear ") >= 0) {
@@ -764,10 +764,9 @@ void handleConfigPage(WiFiClient client) {
   client.print(html);
 }
 
-void handleSaveConfig(WiFiClient client) {
-  // 读取表单数据
-  String postData = client.readStringUntil('\r');
-  
+void handleSaveConfig(WiFiClient client, String request) {
+  String postData = request;
+
   // 解析参数
   int modeIndex = postData.indexOf("mode=") + 5;
   int modeEnd = postData.indexOf("&", modeIndex);
@@ -826,7 +825,7 @@ void handleSaveConfig(WiFiClient client) {
   html += "</div>";
   html += "</body></html>";
   client.print(html);
-  
+
   // 延迟后重启
   delay(2000);
   ESP.restart();
@@ -911,15 +910,23 @@ void handleClearLog(WiFiClient client) {
 }
 
 void handlePowerControl(WiFiClient client, String request) {
-  // 读取POST数据
-  String postData = client.readStringUntil('\r');
-  
+  String postData = request;
+
   // 解析action参数
-  int actionIndex = postData.indexOf("action=") + 7;
+  int actionIndex = postData.indexOf("action=");
+  if (actionIndex < 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Content-Type: text/html");
+    client.println();
+    client.println("<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body><h1>400 - 参数错误</h1><p>缺少 action 参数</p><a href='/'>返回首页</a></body></html>");
+    return;
+  }
+  actionIndex += 7;
   int actionEnd = postData.indexOf("&", actionIndex);
   if (actionEnd == -1) actionEnd = postData.length();
   String action = postData.substring(actionIndex, actionEnd);
-  
+  action.trim();
+
   // 执行电源控制操作
   if (action == "on") {
     powerOn();
@@ -929,8 +936,14 @@ void handlePowerControl(WiFiClient client, String request) {
     triggerShutdown();
   } else if (action == "reset") {
     resetCPU();
+  } else {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Content-Type: text/html");
+    client.println();
+    client.println("<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body><h1>400 - 参数错误</h1><p>未知 action: " + action + "</p><a href='/'>返回首页</a></body></html>");
+    return;
   }
-  
+
   // 返回结果
   String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
   html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>";

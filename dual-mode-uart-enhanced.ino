@@ -60,7 +60,7 @@
 #define CONFIG_MODE_PIN  42   // GPIO2 用于触发配网模式
 
 // 电源和复位控制引脚
-#define POWER_CONTROL_PIN  5   // GPIO3 用于控制开机关机
+#define POWER_CONTROL_PIN  5   // GPIO5 用于控制开机关机
 #define RESET_CONTROL_PIN  4   // GPIO4 用于控制CPU复位
 
 // LED配置
@@ -246,7 +246,7 @@ void handleStatusPage(WiFiClient client);
 void handleConfigPage(WiFiClient client);
 void handleDownloadLog(WiFiClient client, String request);
 void handleClearLog(WiFiClient client);
-void handleSaveConfig(WiFiClient client);
+void handleSaveConfig(WiFiClient client, String request);
 void handleClientPage(WiFiClient client, String request);
 void handleClientSend(WiFiClient client, String request);
 void handleDeleteFile(WiFiClient client, String request);
