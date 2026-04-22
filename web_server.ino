@@ -1070,8 +1070,13 @@ void handlePreviewLog(WiFiClient client, String request) {
     unsigned long fileSize = file.size();
     
     int totalLines = 0;
+    unsigned long lastYield = millis();
     while (file.available()) {
       if (file.read() == '\n') totalLines++;
+      if (millis() - lastYield > 20) {
+        yield();
+        lastYield = millis();
+      }
     }
     if (fileSize > 0) totalLines++;
     
@@ -1085,8 +1090,13 @@ void handlePreviewLog(WiFiClient client, String request) {
     
     file.seek(0);
     int currentLine = 0;
+    unsigned long lastYield2 = millis();
     while (file.available() && currentLine < startLine) {
       if (file.read() == '\n') currentLine++;
+      if (millis() - lastYield2 > 20) {
+        yield();
+        lastYield2 = millis();
+      }
     }
     
     unsigned long pageStartPos = file.position();

@@ -177,7 +177,7 @@ unsigned long logFileSize = 0;    // 日志文件大小
 unsigned int logCount = 0;        // 日志条数
 
 // Debug模式控制
-bool debugMode = true;             // 默认开启debug模式
+bool debugMode = false;             // 默认关闭debug模式
 
 // 客户端列表（服务器模式）
 #define MAX_CLIENTS  5
@@ -299,6 +299,9 @@ void printHelp();
 void setup() {
   // 冷启动延迟，等待电源稳定
   delay(500);
+  
+  // 禁用WiFi日志输出
+  esp_log_level_set("*", ESP_LOG_ERROR);
   
   // 初始化调试串口（优先）
   Serial.begin(115200);
