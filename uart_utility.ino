@@ -2,6 +2,33 @@
 
 #define UART_BUFFER_SIZE 1024
 
+bool isATPlusCandidate(const String &buffer) {
+  if (buffer.length() > 3) {
+    return false;
+  }
+
+  if (buffer.length() >= 1 && buffer[0] != 'A' && buffer[0] != 'a') {
+    return false;
+  }
+
+  if (buffer.length() >= 2 && buffer[1] != 'T' && buffer[1] != 't') {
+    return false;
+  }
+
+  if (buffer.length() == 3 && buffer[2] != '+') {
+    return false;
+  }
+
+  return true;
+}
+
+bool hasATPlusPrefix(const String &buffer) {
+  return buffer.length() >= 3 &&
+         (buffer[0] == 'A' || buffer[0] == 'a') &&
+         (buffer[1] == 'T' || buffer[1] == 't') &&
+         buffer[2] == '+';
+}
+
 void handleUART2ToDebug() {
   // Handle UART2 receive from ring buffer, send to debug serial
   // This uses the interrupt-driven ring buffer from uart_interrupt.ino
@@ -9,46 +36,54 @@ void handleUART2ToDebug() {
 }
 
 void handleUSBSerial() {
-  static String inputBuffer = "";
+  static String commandBuffer = "";
+  static String logBuffer = "";
   static uint8_t txBuffer[128];
   int txLen = 0;
   
   while (Serial.available()) {
     char incoming = Serial.read();
 
-    bool atCandidate = inputBuffer.startsWith("AT") || inputBuffer.startsWith("at");
-    bool collectingAT = atCandidate || inputBuffer.length() == 0;
+    bool collectingAT = commandBuffer.length() > 0 && isATPlusCandidate(commandBuffer);
+
+    if (commandBuffer.length() == 0 && (incoming == 'A' || incoming == 'a')) {
+      commandBuffer += incoming;
+      continue;
+    }
 
     if (collectingAT && incoming != '\r' && incoming != '\n') {
-      inputBuffer += incoming;
-      if (!(inputBuffer.startsWith("AT") || inputBuffer.startsWith("at"))) {
-        for (int i = 0; i < inputBuffer.length(); i++) {
+      commandBuffer += incoming;
+      if (!isATPlusCandidate(commandBuffer) && !hasATPlusPrefix(commandBuffer)) {
+        for (int i = 0; i < commandBuffer.length(); i++) {
           if (txLen >= (int)sizeof(txBuffer)) {
             uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
             txLen = 0;
           }
-          txBuffer[txLen++] = (uint8_t)inputBuffer[i];
+          txBuffer[txLen++] = (uint8_t)commandBuffer[i];
           if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
-            queueTCPWrite((uint8_t)inputBuffer[i]);
+            queueTCPWrite((uint8_t)commandBuffer[i]);
           }
         }
-        inputBuffer = "";
+        if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
+          logBuffer += commandBuffer;
+        }
+        commandBuffer = "";
       }
       continue;
     }
 
-    if (inputBuffer.length() > 0 && (inputBuffer.startsWith("AT") || inputBuffer.startsWith("at"))) {
+    if (hasATPlusPrefix(commandBuffer)) {
       if (incoming == '\n' || incoming == '\r') {
-        String command = inputBuffer;
+        String command = commandBuffer;
         command.trim();
         handleCommand(command);
-        inputBuffer = "";
+        commandBuffer = "";
         continue;
       }
 
-      inputBuffer += incoming;
-      if (inputBuffer.length() > UART_BUFFER_SIZE) {
-        inputBuffer = "";
+      commandBuffer += incoming;
+      if (commandBuffer.length() > UART_BUFFER_SIZE) {
+        commandBuffer = "";
       }
       continue;
     }
@@ -65,20 +100,23 @@ void handleUSBSerial() {
 
     if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
       if (incoming == '\n') {
-        String command = inputBuffer;
+        String command = logBuffer;
         command.trim();
         if (command.length() > 0) {
           enqueueSDLog(command, client_id, false);
         }
-        inputBuffer = "";
+        logBuffer = "";
       } else if (incoming != '\r') {
-        inputBuffer += incoming;
+        logBuffer += incoming;
       }
     }
     
     // 限制缓冲区大小
-    if (inputBuffer.length() > UART_BUFFER_SIZE) {
-      inputBuffer = "";
+    if (commandBuffer.length() > UART_BUFFER_SIZE) {
+      commandBuffer = "";
+    }
+    if (logBuffer.length() > UART_BUFFER_SIZE) {
+      logBuffer = "";
     }
   }
 
