@@ -4,11 +4,13 @@ void initWebServer() {
   if (webServerEnabled && (wifiConnected || currentMode == MODE_SERVER)) {
     webServer.begin();
     String ipStr = (currentMode == MODE_SERVER) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
-    Serial.println("✓ Web服务器启动成功");
-    Serial.println("  访问地址: http://" + ipStr);
-    Serial.println("  日志查看: http://" + ipStr + "/logs");
-    Serial.println("  系统状态: http://" + ipStr + "/status");
-    Serial.println("  串口监视器: http://" + ipStr + "/serial");
+    if (debugMode) {
+      Serial.println("✓ Web服务器启动成功");
+      Serial.println("  访问地址: http://" + ipStr);
+      Serial.println("  日志查看: http://" + ipStr + "/logs");
+      Serial.println("  系统状态: http://" + ipStr + "/status");
+      Serial.println("  串口监视器: http://" + ipStr + "/serial");
+    }
   }
 }
 

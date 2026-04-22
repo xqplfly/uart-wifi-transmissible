@@ -4,6 +4,7 @@
 static QueueHandle_t uartQueue = NULL;
 static TaskHandle_t uartTaskHandle = NULL;
 bool uartDmaInitialized = false;
+portMUX_TYPE tcpSendBufferMux = portMUX_INITIALIZER_UNLOCKED;
 
 #define UART_DMA_RX_BUF_SIZE 8192
 #define UART_DMA_TX_BUF_SIZE 2048
@@ -22,92 +23,98 @@ uint16_t tcpSendBufferLen = 0;
 int selectedClientIndex = -1;
 
 void queueTCPWrite(uint8_t byte) {
+  portENTER_CRITICAL(&tcpSendBufferMux);
   if (tcpSendBufferLen < TCP_SEND_BUFFER_SIZE) {
     tcpSendBuffer[tcpSendBufferLen++] = byte;
   }
+  portEXIT_CRITICAL(&tcpSendBufferMux);
 }
 
 // DMA接收任务
 void uartRxTask(void *arg) {
   uart_event_t event;
   static String uartLineBuffer = "";
+  static uint8_t buf[UART_DMA_RX_BUF_SIZE];
   
   while (true) {
     if (xQueueReceive(uartQueue, &event, portMAX_DELAY) == pdTRUE) {
       if (event.type == UART_DATA) {
-        uint8_t *buf = (uint8_t *)malloc(event.size);
-        if (buf) {
-          int len = uart_read_bytes(UART_NUM_2, buf, event.size, 0);
-          if (len > 0) {
-            // 过滤ANSI转义序列到临时缓冲区
-            static uint8_t filteredBuf[1024];
-            int filteredLen = 0;
-            for (int i = 0; i < len && filteredLen < 1024; i++) {
-              if (buf[i] == 0x1B) {
-                int j = i + 1;
-                if (j < len && buf[j] == '[') {
-                  j++;
-                  while (j < len) {
-                    char c = buf[j];
-                    if ((c >= '0' && c <= '9') || c == ';' || c == '?' || c == '>' || c == '<' || c == '=') {
-                      j++;
-                    } else {
-                      break;
-                    }
-                  }
-                  if (j < len && buf[j] >= 0x40 && buf[j] <= 0x7E) {
+        int toRead = event.size;
+        if (toRead > UART_DMA_RX_BUF_SIZE) {
+          toRead = UART_DMA_RX_BUF_SIZE;
+        }
+
+        int len = uart_read_bytes(UART_NUM_2, buf, toRead, 0);
+        if (len > 0) {
+          // 过滤ANSI转义序列到临时缓冲区
+          static uint8_t filteredBuf[1024];
+          int filteredLen = 0;
+          for (int i = 0; i < len && filteredLen < 1024; i++) {
+            if (buf[i] == 0x1B) {
+              int j = i + 1;
+              if (j < len && buf[j] == '[') {
+                j++;
+                while (j < len) {
+                  char c = buf[j];
+                  if ((c >= '0' && c <= '9') || c == ';' || c == '?' || c == '>' || c == '<' || c == '=') {
                     j++;
+                  } else {
+                    break;
                   }
-                  i = j - 1;
-                  continue;
                 }
-              }
-              filteredBuf[filteredLen++] = buf[i];
-            }
-            
-            // 写入Serial
-            Serial.write((char*)filteredBuf, filteredLen);
-            
-            // 写入Web串口显示缓冲区（只在非透传模式下写入）
-            if (selectedClientIndex < 0) {
-              appendToSerialBuffer((char*)filteredBuf, filteredLen);
-            }
-            
-            // 写入TCP缓冲区（服务器模式转发到客户端，客户端模式转发到服务器）
-            if (currentMode == MODE_SERVER || (currentMode == MODE_CLIENT && tcpConnected)) {
-              for (int i = 0; i < filteredLen; i++) {
-                if (tcpSendBufferLen < TCP_SEND_BUFFER_SIZE) {
-                  tcpSendBuffer[tcpSendBufferLen++] = filteredBuf[i];
+                if (j < len && buf[j] >= 0x40 && buf[j] <= 0x7E) {
+                  j++;
                 }
+                i = j - 1;
+                continue;
               }
             }
-            
-            // 客户端模式：记录发送的日志到SD卡
-            if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
-              for (int i = 0; i < filteredLen; i++) {
-                char c = filteredBuf[i];
-                if (c == '\n') {
-                  if (uartLineBuffer.length() > 1) {
-                    enqueueSDLog(uartLineBuffer, client_id, false);
-                  }
-                  uartLineBuffer = "";
-                } else if (c != '\r') {
-                  uartLineBuffer += c;
+            filteredBuf[filteredLen++] = buf[i];
+          }
+          
+          // USB串口保持纯透传，不能过滤ANSI控制序列，否则Linux终端/htop会乱码
+          Serial.write((char*)buf, len);
+          
+          // 写入Web串口显示缓冲区（只在非透传模式下写入）
+          if (selectedClientIndex < 0) {
+            appendToSerialBuffer((char*)filteredBuf, filteredLen);
+          }
+          
+          // TCP透传同样保持原始数据，Web/日志才使用过滤后的内容
+          if (currentMode == MODE_SERVER || (currentMode == MODE_CLIENT && tcpConnected)) {
+            portENTER_CRITICAL(&tcpSendBufferMux);
+            for (int i = 0; i < len; i++) {
+              if (tcpSendBufferLen < TCP_SEND_BUFFER_SIZE) {
+                tcpSendBuffer[tcpSendBufferLen++] = buf[i];
+              }
+            }
+            portEXIT_CRITICAL(&tcpSendBufferMux);
+          }
+          
+          // 客户端模式：记录发送的日志到SD卡
+          if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
+            for (int i = 0; i < filteredLen; i++) {
+              char c = filteredBuf[i];
+              if (c == '\n') {
+                if (uartLineBuffer.length() > 1) {
+                  enqueueSDLog(uartLineBuffer, client_id, false);
                 }
+                uartLineBuffer = "";
+              } else if (c != '\r') {
+                uartLineBuffer += c;
               }
             }
           }
-          free(buf);
         }
       } else if (event.type == UART_FIFO_OVF_ERROR) {
         static unsigned long lastOverflowPrint = 0;
-        if (millis() - lastOverflowPrint > 5000) {
+        if (debugMode && millis() - lastOverflowPrint > 5000) {
           Serial.println("UART DMA overflow!");
           lastOverflowPrint = millis();
         }
       } else if (event.type == UART_BUFFER_FULL) {
         static unsigned long lastBufFullPrint = 0;
-        if (millis() - lastBufFullPrint > 5000) {
+        if (debugMode && millis() - lastBufFullPrint > 5000) {
           Serial.println("DMA buffer full!");
           lastBufFullPrint = millis();
         }
@@ -142,18 +149,24 @@ void initUARTInterrupt(bool reinstall) {
       0);
     
     if (err != ESP_OK) {
-      Serial.println("UART DMA install failed: " + String(err));
+      if (debugMode) {
+        Serial.println("UART DMA install failed: " + String(err));
+      }
       return;
     }
   }
 
   // 更新波特率
   uart_param_config(UART_NUM_2, &uart_config);
+  uart_set_rx_full_threshold(UART_NUM_2, 16);
+  uart_set_rx_timeout(UART_NUM_2, 2);
 
   if (!uartDmaInitialized) {
     esp_err_t err = uart_set_pin(UART_NUM_2, 17, 16, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) {
-      Serial.println("UART DMA pin failed: " + String(err));
+      if (debugMode) {
+        Serial.println("UART DMA pin failed: " + String(err));
+      }
       return;
     }
 
@@ -161,7 +174,9 @@ void initUARTInterrupt(bool reinstall) {
     xTaskCreatePinnedToCore(uartRxTask, "uart_rx", 4096, NULL, 12, &uartTaskHandle, 1);
     
     uartDmaInitialized = true;
-    Serial.println("UART DMA mode enabled!");
+    if (debugMode) {
+      Serial.println("UART DMA mode enabled!");
+    }
   }  // 始终打印调试信息
 }
 
@@ -188,30 +203,39 @@ int uart2BufferLength() {
 }
 
 void flushTCPBuffer() {
-  if (tcpSendBufferLen == 0) return;
+  uint8_t localBuffer[TCP_SEND_BUFFER_SIZE];
+  uint16_t localLen = 0;
+
+  portENTER_CRITICAL(&tcpSendBufferMux);
+  if (tcpSendBufferLen > 0) {
+    localLen = tcpSendBufferLen;
+    memcpy(localBuffer, tcpSendBuffer, localLen);
+    tcpSendBufferLen = 0;
+  }
+  portEXIT_CRITICAL(&tcpSendBufferMux);
+
+  if (localLen == 0) return;
   
   if (currentMode == MODE_SERVER) {
     if (selectedClientIndex >= 0 && selectedClientIndex < MAX_CLIENTS) {
       if (serverClients[selectedClientIndex] && serverClients[selectedClientIndex].connected()) {
-        serverClients[selectedClientIndex].write(tcpSendBuffer, tcpSendBufferLen);
+        serverClients[selectedClientIndex].write(localBuffer, localLen);
       } else {
         selectedClientIndex = -1;
       }
     } else {
       for (int i = 0; i < MAX_CLIENTS; i++) {
         if (serverClients[i] && serverClients[i].connected()) {
-          serverClients[i].write(tcpSendBuffer, tcpSendBufferLen);
+          serverClients[i].write(localBuffer, localLen);
         }
       }
     }
   } else if (currentMode == MODE_CLIENT && tcpConnected) {
-    int sent = tcpClient.write(tcpSendBuffer, tcpSendBufferLen);
+    int sent = tcpClient.write(localBuffer, localLen);
     if (sent <= 0) {
       tcpConnected = false;
     }
   }
-  
-  tcpSendBufferLen = 0;
 }
 
 // 主循环调用（刷新TCP缓冲区）

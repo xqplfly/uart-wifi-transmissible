@@ -78,32 +78,9 @@ void initClientMode() {
     return;
   }
 
-  WiFi.begin(client_wifi_ssid, client_wifi_password);
-
-  unsigned long startTime = millis();
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(100);
-    yield();
-    if (debugMode) {
-      Serial.print(".");
-    }
-
-    if (millis() - startTime > 15000) {
-      if (debugMode) {
-        Serial.println("\nWiFi connection timeout, starting config mode...");
-      }
-      startConfigMode();
-      return;
-    }
-  }
-
-  wifiConnected = true;
-  if (debugMode) {
-    Serial.println("\nWiFi connected");
-    Serial.println("  Client IP: " + WiFi.localIP().toString());
-  }
-
-  connectToServer();
+  wifiConnected = false;
+  tcpConnected = false;
+  WiFi.mode(WIFI_STA);
 }
 
 void connectToServer() {
@@ -142,6 +119,9 @@ void runClientMode() {
   wl_status_t wifiStatus = WiFi.status();
 
   if (!wifiConnected || wifiStatus != WL_CONNECTED) {
+    wifiConnected = false;
+    tcpConnected = false;
+
     if (!wifiConnecting && (wifiStatus == WL_IDLE_STATUS || wifiStatus == WL_DISCONNECTED || wifiStatus == WL_NO_SSID_AVAIL || wifiStatus == WL_CONNECT_FAILED)) {
       wifiConnecting = true;
       wifiConnectStart = millis();
@@ -151,6 +131,10 @@ void runClientMode() {
     if (wifiStatus == WL_CONNECTED) {
       wifiConnected = true;
       wifiConnecting = false;
+      if (debugMode) {
+        Serial.println("WiFi connected");
+        Serial.println("  Client IP: " + WiFi.localIP().toString());
+      }
       connectToServer();
     } else if (millis() - wifiConnectStart > wifiConnectTimeout) {
       wifiConnecting = false;

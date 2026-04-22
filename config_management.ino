@@ -24,9 +24,16 @@ void loadConfigFromEEPROM() {
   }
   
   // Load log timestamp setting
-  logWithTimestamp = (EEPROM.read(60) == 1);
+  logWithTimestamp = (EEPROM.read(EEPROM_LOGTIME_ADDR) == 1);
+
+  int savedDebugMode = EEPROM.read(EEPROM_DEBUGMODE_ADDR);
+  if (savedDebugMode == 0 || savedDebugMode == 1) {
+    debugMode = (savedDebugMode == 1);
+  }
   
-  Serial.println("Config loaded from EEPROM");
+  if (debugMode) {
+    Serial.println("Config loaded from EEPROM");
+  }
 }
 
 void saveModeToEEPROM() {
@@ -45,10 +52,13 @@ void saveConfigToEEPROM() {
   EEPROM.write(EEPROM_CLIENT_ID_ADDR + client_id.length(), 0);
   
   // Save log timestamp setting
-  EEPROM.write(60, logWithTimestamp ? 1 : 0);
+  EEPROM.write(EEPROM_LOGTIME_ADDR, logWithTimestamp ? 1 : 0);
+  EEPROM.write(EEPROM_DEBUGMODE_ADDR, debugMode ? 1 : 0);
   
   EEPROM.commit();
-  Serial.println("Config saved to EEPROM");
+  if (debugMode) {
+    Serial.println("Config saved to EEPROM");
+  }
 }
 
 // ==================== Mode Switch ====================

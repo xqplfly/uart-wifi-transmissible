@@ -8,6 +8,7 @@
 #include <SPI.h>
 #include <FastLED.h>
 #include <esp_sleep.h>
+#include <esp_log.h>
 #include <driver/uart.h>
 
 // ==================== 版本信息 ====================
@@ -45,8 +46,10 @@
 #define EEPROM_CLIENT_ID_ADDR     10
 #define EEPROM_UART2_BAUD_ADDR    46
 #define EEPROM_LOWPOWER_TIMEOUT   54
-#define EEPROM_WIFI_SSID_ADDR     60
-#define EEPROM_WIFI_PASS_ADDR     100
+#define EEPROM_LOGTIME_ADDR       60
+#define EEPROM_DEBUGMODE_ADDR     61
+#define EEPROM_WIFI_SSID_ADDR     70
+#define EEPROM_WIFI_PASS_ADDR     110
 
 // 按键配置
 #define BUTTON_PIN    0
@@ -300,22 +303,28 @@ void setup() {
   // 冷启动延迟，等待电源稳定
   delay(500);
   
-  // 禁用WiFi日志输出
+  // 默认固件保持串口纯净，关闭底层WiFi噪声日志
   esp_log_level_set("*", ESP_LOG_ERROR);
+  esp_log_level_set("wifi", ESP_LOG_NONE);
+  esp_log_level_set("wifi_init", ESP_LOG_NONE);
   
   // 初始化调试串口（优先）
   Serial.begin(115200);
   delay(200);
   
-  Serial.println("\n========================================");
-  Serial.println("  ESP32-S3 UART2透传系统");
-  Serial.println("  版本: " + String(FIRMWARE_VERSION));
-  Serial.println("  功能: 调试串口 ↔ UART2 双向透传");
-  Serial.println("========================================");
+  if (debugMode) {
+    Serial.println("\n========================================");
+    Serial.println("  ESP32-S3 UART2透传系统");
+    Serial.println("  版本: " + String(FIRMWARE_VERSION));
+    Serial.println("  功能: 调试串口 ↔ UART2 双向透传");
+    Serial.println("========================================");
+  }
   
   // 检查是否是冷启动
   if (esp_reset_reason() == ESP_RST_POWERON) {
-    Serial.println("冷启动，额外等待电源稳定...");
+    if (debugMode) {
+      Serial.println("冷启动，额外等待电源稳定...");
+    }
     delay(1000);
   }
   
@@ -415,18 +424,25 @@ void setup() {
 
 // ==================== 主循环 ====================
 void loop() {
+  static unsigned long lastBatteryCheck = 0;
+  static unsigned long lastSDCheck = 0;
+
   yield();
+
+  handleConfigMode();
   
   // 处理按键
   handleButton();
   
   // 检查电池
-  if (millis() % 10000 == 0) {  // 每10秒检查一次
+  if (millis() - lastBatteryCheck >= 10000) {
+    lastBatteryCheck = millis();
     checkBattery();
   }
   
   // 检查SD卡状态（热插拔检测）
-  if (millis() % 2000 == 0) {  // 每2秒检查一次
+  if (millis() - lastSDCheck >= 2000) {
+    lastSDCheck = millis();
     checkSDCardStatus();
   }
   

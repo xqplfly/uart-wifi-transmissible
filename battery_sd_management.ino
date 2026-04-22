@@ -42,7 +42,9 @@ void checkBattery() {
   if (batteryVoltage < BATTERY_LOW_VOLTAGE && batteryVoltage > 2.0) {
     if (!lowBattery) {
       lowBattery = true;
-      Serial.println("! Low battery warning! Voltage: " + String(batteryVoltage) + "V");
+      if (debugMode) {
+        Serial.println("! Low battery warning! Voltage: " + String(batteryVoltage) + "V");
+      }
       for (int i = 0; i < 5; i++) {
         setLED(CRGB(255, 0, 0));
         delay(200);
@@ -122,7 +124,9 @@ void powerOffSDCard() {
     SD.end();
     digitalWrite(SD_POWER_PIN, LOW);
     sdCardReady = false;
-    Serial.println("SD card powered off");
+    if (debugMode) {
+      Serial.println("SD card powered off");
+    }
   }
 }
 
@@ -137,7 +141,9 @@ void powerOnSDCard() {
 void createDirectory(String path) {
   if (sdCardReady && !SD.exists(path)) {
     SD.mkdir(path);
-    Serial.println("  Created directory: " + path);
+    if (debugMode) {
+      Serial.println("  Created directory: " + path);
+    }
   }
 }
 
