@@ -105,9 +105,11 @@ void initSDCard() {
 
     if (currentMode == MODE_CLIENT) {
       createDirectory("/client_local");
+      createDirectory("/client_u1");    // UART1 日志目录
     } else {
       createDirectory("/server");
       createDirectory("/server/system");
+      createDirectory("/server/uart1"); // UART1 日志目录
     }
   } else {
     sdCardReady = false;
@@ -246,6 +248,7 @@ typedef struct {
   String data;
   String clientId;
   bool isServer;
+  uint8_t uartChannel;  // 1=UART1, 2=UART2(默认)
 } SDLogEntry;
 
 SDLogEntry sdWriteQueue[SD_WRITE_QUEUE_SIZE];
@@ -269,7 +272,7 @@ String getLogTimestamp() {
   return String(buf);
 }
 
-bool enqueueSDLog(String data, String clientId, bool isServer) {
+bool enqueueSDLog(String data, String clientId, bool isServer, uint8_t uartChannel) {
   if (!sdCardReady || data.length() == 0) return false;
   if (sdQueueCount >= SD_WRITE_QUEUE_SIZE) return false;
   
@@ -285,6 +288,7 @@ bool enqueueSDLog(String data, String clientId, bool isServer) {
   sdWriteQueue[sdQueueHead].data = filteredData;
   sdWriteQueue[sdQueueHead].clientId = clientId;
   sdWriteQueue[sdQueueHead].isServer = isServer;
+  sdWriteQueue[sdQueueHead].uartChannel = uartChannel;
   sdQueueHead = (sdQueueHead + 1) % SD_WRITE_QUEUE_SIZE;
   sdQueueCount++;
   return true;
@@ -313,14 +317,27 @@ void processSDWriteQueue() {
     entry.clientId.toCharArray(safeClientId, sizeof(safeClientId));
     sanitizeFilenameInPlace(safeClientId);
     
-    if (entry.isServer) {
-      snprintf(clientDir, sizeof(clientDir), "/server/%s", safeClientId);
+    if (entry.uartChannel == 1) {
+      // UART1 存入独立目录，与 UART2 完全隔离
+      if (entry.isServer) {
+        snprintf(clientDir, sizeof(clientDir), "/server/uart1");
+        createDirectory("/server/uart1");
+      } else {
+        snprintf(clientDir, sizeof(clientDir), "/client_u1");
+        createDirectory("/client_u1");
+      }
       snprintf(path, sizeof(path), "%s/%s_%s.txt",
                clientDir, logFileName.c_str(), getDateString().c_str());
     } else {
-      snprintf(clientDir, sizeof(clientDir), "/client_local");
-      snprintf(path, sizeof(path), "%s/%s_%s.txt",
-               clientDir, logFileName.c_str(), getDateString().c_str());
+      if (entry.isServer) {
+        snprintf(clientDir, sizeof(clientDir), "/server/%s", safeClientId);
+        snprintf(path, sizeof(path), "%s/%s_%s.txt",
+                 clientDir, logFileName.c_str(), getDateString().c_str());
+      } else {
+        snprintf(clientDir, sizeof(clientDir), "/client_local");
+        snprintf(path, sizeof(path), "%s/%s_%s.txt",
+                 clientDir, logFileName.c_str(), getDateString().c_str());
+      }
     }
     
     File file = SD.open(path, FILE_APPEND);

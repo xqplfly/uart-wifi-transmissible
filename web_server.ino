@@ -94,14 +94,14 @@ void handleWebServer() {
     client.print("Microsoft Connect Test");
   } else if (requestLine.indexOf("GET /serial ") >= 0 || requestLine.indexOf("GET /serial") >= 0) {
     if (requestLine.indexOf("GET /serial/data") >= 0) {
-      handleSerialDataAPI(client);
+      handleSerialDataAPI(client, requestLine);
     } else {
       handleSerialPage(client);
     }
   } else if (requestLine.indexOf("POST /serial/send") >= 0) {
     handleSerialSend(client, postBody);
   } else if (requestLine.indexOf("POST /serial/clear") >= 0) {
-    handleSerialClear(client);
+    handleSerialClear(client, postBody);
   } else if (requestLine.indexOf("GET /logs") >= 0) {
     handleLogsPage(client, request);
   } else if (requestLine.indexOf("GET /preview") >= 0) {
@@ -474,6 +474,8 @@ void handleStatusPage(WiFiClient client) {
   html += "<h2>串口信息</h2>";
   html += "<strong>UART2波特率:</strong> " + String(uart2BaudRate) + "<br>";
   html += "<strong>UART2引脚:</strong> RX=" + String(UART2_RX_PIN) + " TX=" + String(UART2_TX_PIN) + "<br>";
+  html += "<strong>UART1波特率:</strong> " + String(uart1BaudRate) + "<br>";
+  html += "<strong>UART1引脚:</strong> RX=" + String(UART1_RX_PIN) + " TX=" + String(UART1_TX_PIN) + "<br>";
   html += "</div>";
   
   // SD卡信息
@@ -1249,27 +1251,29 @@ void handleSerialPage(WiFiClient client) {
   html += "<a href='/' style='color:#4CAF50;text-decoration:none;font-size:14px;'>← 首页</a>";
   html += "<h1 style='margin:0;'>🖥️ 串口监视器</h1>";
   html += "</div>";
-  html += "<div class='header-info'>波特率: " + String(uart2BaudRate) + " | 模式: " + String(currentMode == MODE_CLIENT ? "客户端" : "服务器") + "</div>";
+  html += "<div class='header-info'>UART2: " + String(uart2BaudRate) + " | UART1: " + String(uart1BaudRate) + " | 模式: " + String(currentMode == MODE_CLIENT ? "客户端" : "服务器") + "</div>";
   html += "</div>";
   html += "<div style='background:#333;padding:8px 15px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;'>";
   html += "<span style='color:#888;font-size:12px;'>显示:</span>";
   html += "<select id='sourceSelect' onchange='changeSource()' style='background:#444;color:#fff;border:1px solid #555;padding:4px 8px;border-radius:4px;font-size:12px;'>";
-  html += "<option value='server'>服务器</option>";
+  html += "<option value='server'>UART2/服务器</option>";
   for (int i = 0; i < MAX_CLIENTS; i++) {
     if (serverClients[i] && serverClients[i].connected()) {
       html += "<option value='client_" + String(i) + "'>客户端 " + String(i) + "</option>";
     }
   }
+  html += "<option value='uart1'>UART1 (IO" + String(UART1_RX_PIN) + "/" + String(UART1_TX_PIN) + ")</option>";
   html += "</select>";
   html += "<span style='color:#888;font-size:12px;margin-left:10px;'>发送目标:</span>";
   html += "<select id='targetSelect' style='background:#444;color:#fff;border:1px solid #555;padding:4px 8px;border-radius:4px;font-size:12px;'>";
-  html += "<option value='-1'>全部/本地UART</option>";
+  html += "<option value='-1'>全部/本地UART2</option>";
   for (int i = 0; i < MAX_CLIENTS; i++) {
     if (serverClients[i] && serverClients[i].connected()) {
       String sel = (selectedClientIndex == i) ? " selected" : "";
       html += "<option value='" + String(i) + "'" + sel + ">客户端 " + String(i) + "</option>";
     }
   }
+  html += "<option value='uart1'>UART1 (IO" + String(UART1_TX_PIN) + ")</option>";
   html += "</select>";
   html += "</div>";
   html += "<div class='serial-container'>";
@@ -1289,7 +1293,7 @@ void handleSerialPage(WiFiClient client) {
   html += "</div>";
   html += "<script>";
   html += "var currentSource = 'server';";
-  html += "var serialData = {server: '', client_0: '', client_1: '', client_2: '', client_3: '', client_4: ''};";
+  html += "var serialData = {server: '', client_0: '', client_1: '', client_2: '', client_3: '', client_4: '', uart1: ''};";
   html += "function changeSource(){";
   html += "  currentSource = document.getElementById('sourceSelect').value;";
   html += "  document.getElementById('serialOutput').value = serialData[currentSource] || '';";
@@ -1340,9 +1344,9 @@ void handleSerialPage(WiFiClient client) {
   html += "  });";
   html += "}";
   html += "function clearSerial(){";
-  html += "  var xhr = new XMLHttpRequest();";
-  html += "  xhr.open('POST', '/serial/clear', true);";
-  html += "  xhr.send();";
+  html += "  var body = 'source=' + currentSource;";
+  html += "  fetch('/serial/clear', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});";
+  html += "  serialData[currentSource] = '';";
   html += "  document.getElementById('serialOutput').value = '';";
   html += "}";
   html += "document.getElementById('serialInput').addEventListener('keypress', function(e){";
@@ -1359,13 +1363,20 @@ void handleSerialPage(WiFiClient client) {
   client.print(html);
 }
 
-void handleSerialDataAPI(WiFiClient client) {
+void handleSerialDataAPI(WiFiClient client, String request) {
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: text/plain");
   client.println("Cache-Control: no-cache, no-store, must-revalidate");
   client.println();
 
-  String response = filterAnsiEscape(takeSerialBufferSnapshot(true));
+  String response;
+  if (request.indexOf("source=uart1") >= 0) {
+    // UART1 独立缓冲区
+    response = filterAnsiEscape(takeSerial1BufferSnapshot(true));
+  } else {
+    // 默认 UART2 / 服务器缓冲区
+    response = filterAnsiEscape(takeSerialBufferSnapshot(true));
+  }
 
   client.print(response);
 }
@@ -1382,6 +1393,7 @@ void handleSerialSend(WiFiClient client, String request) {
   data = urlDecode(data);
   
   int targetIndex = -1;
+  bool targetUart1 = false;
   int targetPos = request.indexOf("target=");
   if (targetPos >= 0) {
     targetPos += 7;
@@ -1389,7 +1401,11 @@ void handleSerialSend(WiFiClient client, String request) {
     if (targetEnd == -1) targetEnd = request.length();
     String targetStr = request.substring(targetPos, targetEnd);
     targetStr.trim();
-    targetIndex = targetStr.toInt();
+    if (targetStr == "uart1") {
+      targetUart1 = true;
+    } else {
+      targetIndex = targetStr.toInt();
+    }
   }
   
   bool addCr = false;
@@ -1410,7 +1426,10 @@ void handleSerialSend(WiFiClient client, String request) {
   if (addLf) data += "\n";
   
   if (data.length() > 0) {
-    if (currentMode == MODE_SERVER) {
+    if (targetUart1) {
+      // 发向 UART1
+      uart_write_bytes(UART_NUM_1, data.c_str(), data.length());
+    } else if (currentMode == MODE_SERVER) {
       if (targetIndex >= 0 && targetIndex < MAX_CLIENTS) {
         selectedClientIndex = targetIndex;
         if (serverClients[targetIndex] && serverClients[targetIndex].connected()) {
@@ -1429,8 +1448,12 @@ void handleSerialSend(WiFiClient client, String request) {
   client.print(html);
 }
 
-void handleSerialClear(WiFiClient client) {
-  clearSerialBuffer();
+void handleSerialClear(WiFiClient client, String postBody) {
+  if (postBody.indexOf("source=uart1") >= 0) {
+    clearSerial1Buffer();
+  } else {
+    clearSerialBuffer();
+  }
 
   String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
   html += "<!DOCTYPE html><html><head></head><body></body></html>";
@@ -1505,6 +1528,62 @@ void appendToSerialBuffer(const char* str, int len) {
 // 处理串口数据请求（兼容旧接口）
 void handleSerialData(WiFiClient client) {
   handleSerialPage(client);
+}
+
+// ==================== UART1 独立缓冲区操作 ====================
+void clearSerial1Buffer() {
+  portENTER_CRITICAL(&serial1DisplayBufferMux);
+  serial1DisplayBufferLen = 0;
+  serial1DisplayBuffer[0] = '\0';
+  portEXIT_CRITICAL(&serial1DisplayBufferMux);
+}
+
+String takeSerial1BufferSnapshot(bool clearBuffer) {
+  char localBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1];
+  size_t snapshotLen = 0;
+
+  portENTER_CRITICAL(&serial1DisplayBufferMux);
+  snapshotLen = serial1DisplayBufferLen;
+  memcpy(localBuffer, serial1DisplayBuffer, snapshotLen);
+  localBuffer[snapshotLen] = '\0';
+
+  if (clearBuffer) {
+    serial1DisplayBufferLen = 0;
+    serial1DisplayBuffer[0] = '\0';
+  }
+  portEXIT_CRITICAL(&serial1DisplayBufferMux);
+
+  return String(localBuffer);
+}
+
+void appendToSerial1Buffer(char c) {
+  if (c == '\r') return;
+  appendToSerial1Buffer(&c, 1);
+}
+
+void appendToSerial1Buffer(const char* str) {
+  if (!str) return;
+  appendToSerial1Buffer(str, strlen(str));
+}
+
+void appendToSerial1Buffer(const char* str, int len) {
+  if (!str || len <= 0) return;
+
+  portENTER_CRITICAL(&serial1DisplayBufferMux);
+  for (int i = 0; i < len; i++) {
+    if (str[i] == '\r') continue;
+
+    if (serial1DisplayBufferLen >= SERIAL_DISPLAY_BUFFER_SIZE) {
+      size_t keepLen = SERIAL_DISPLAY_BUFFER_SIZE / 2;
+      size_t dropLen = serial1DisplayBufferLen - keepLen;
+      memmove(serial1DisplayBuffer, serial1DisplayBuffer + dropLen, keepLen);
+      serial1DisplayBufferLen = keepLen;
+    }
+
+    serial1DisplayBuffer[serial1DisplayBufferLen++] = str[i];
+  }
+  serial1DisplayBuffer[serial1DisplayBufferLen] = '\0';
+  portEXIT_CRITICAL(&serial1DisplayBufferMux);
 }
 
 void handleDeleteFile(WiFiClient client, String request) {

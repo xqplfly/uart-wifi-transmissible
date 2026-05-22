@@ -153,6 +153,8 @@ void handleCommand(String command) {
     Serial.println("  Log: " + logFileName + " (" + String(logCount) + " entries)");
     Serial.println("  Log Timestamp: " + String(logWithTimestamp ? "ON" : "OFF"));
     Serial.println("  Battery: " + String(batteryVoltage) + "V" + (lowBattery ? " (Low)" : ""));
+    Serial.println("  UART2 Baud: " + String(uart2BaudRate));
+    Serial.println("  UART1 Baud: " + String(uart1BaudRate));
   } else if (command.startsWith("AT+LOGNAME ")) {
     String newName = command.substring(10);
     logFileName = newName;
@@ -176,6 +178,17 @@ void handleCommand(String command) {
       initUARTInterrupt(true);
       saveConfigToEEPROM();
       Serial.println("OK UART2 baud rate set to: " + String(uart2BaudRate));
+    } else {
+      Serial.println("X Invalid baud rate");
+    }
+  } else if (command.startsWith("AT+BAUD1 ")) {
+    String baudStr = command.substring(9);
+    unsigned long newBaud = baudStr.toInt();
+    if (newBaud >= 9600 && newBaud <= 921600) {
+      uart1BaudRate = newBaud;
+      initUART1Interrupt(true);
+      saveConfigToEEPROM();
+      Serial.println("OK UART1 baud rate set to: " + String(uart1BaudRate));
     } else {
       Serial.println("X Invalid baud rate");
     }
@@ -428,6 +441,7 @@ void printHelp() {
   Serial.println("  AT+LOGNAME <name> - Set log filename");
   Serial.println("  AT+LOGTIME=ON/OFF - Enable/disable timestamp in log");
   Serial.println("  AT+BAUD <rate>  - Set UART2 baud rate");
+  Serial.println("  AT+BAUD1 <rate> - Set UART1 baud rate (IO19/IO20)");
   Serial.println("  AT+DEBUG=ON/OFF - Enable/disable debug mode");
   Serial.println("  AT+RESTART      - Restart system");
   Serial.println("  AT+CONFIG       - Enter WiFi config mode (non-blocking)");

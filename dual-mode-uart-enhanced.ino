@@ -45,6 +45,7 @@
 #define EEPROM_MODE_ADDR          0
 #define EEPROM_CLIENT_ID_ADDR     10
 #define EEPROM_UART2_BAUD_ADDR    46
+#define EEPROM_UART1_BAUD_ADDR    50  // 占用 50-53（4字节）
 #define EEPROM_LOWPOWER_TIMEOUT   54
 #define EEPROM_LOGTIME_ADDR       60
 #define EEPROM_DEBUGMODE_ADDR     61
@@ -72,6 +73,11 @@
 #define UART2_RX_PIN  16
 #define UART2_TX_PIN  17
 #define DEFAULT_UART2_BAUD  115200
+
+// ========== UART1配置（新增：IO19/IO20）==========
+#define UART1_RX_PIN  19
+#define UART1_TX_PIN  20
+#define DEFAULT_UART1_BAUD  115200
 
 // SD卡配置
 #define SD_CS_PIN     10
@@ -120,6 +126,9 @@ unsigned long systemStartTime = 0;
 
 // ========== UART2波特率 ==========
 unsigned long uart2BaudRate = DEFAULT_UART2_BAUD;
+
+// ========== UART1波特率 ==========
+unsigned long uart1BaudRate = DEFAULT_UART1_BAUD;
 
 // 按键相关
 unsigned long buttonPressTime = 0;
@@ -202,9 +211,14 @@ String uart2RxBuffer = "";  // UART2接收缓冲区
 
 // ========== 串口实时显示缓冲区 ==========
 #define SERIAL_DISPLAY_BUFFER_SIZE  4096
+// UART2 显示缓冲区
 portMUX_TYPE serialDisplayBufferMux = portMUX_INITIALIZER_UNLOCKED;
-char serialDisplayBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1] = {0};  // Web串口显示缓冲区
+char serialDisplayBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1] = {0};
 size_t serialDisplayBufferLen = 0;
+// UART1 独立显示缓冲区（与 UART2 完全隔离）
+portMUX_TYPE serial1DisplayBufferMux = portMUX_INITIALIZER_UNLOCKED;
+char serial1DisplayBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1] = {0};
+size_t serial1DisplayBufferLen = 0;
 unsigned long lastSerialUpdate = 0;
 
 // ==================== 函数声明 ====================
@@ -234,7 +248,7 @@ void powerOnSDCard();
 void createDirectory(String path);
 void saveDataToSD(String data, String clientId, bool isServer);
 void saveServerSystemLog(String data);
-bool enqueueSDLog(String data, String clientId, bool isServer);
+bool enqueueSDLog(String data, String clientId, bool isServer, uint8_t uartChannel = 2);
 void processSDWriteQueue();
 void checkSDCardStatus();
 
@@ -256,15 +270,22 @@ void handleDeleteDirectory(WiFiClient client, String request);
 bool deleteDirectoryRecursive(String path);
 void handleNotFound(WiFiClient client);
 void handleSerialPage(WiFiClient client);
-void handleSerialDataAPI(WiFiClient client);
+void handleSerialDataAPI(WiFiClient client, String request);
 void handleSerialSend(WiFiClient client, String request);
-void handleSerialClear(WiFiClient client);
+void handleSerialClear(WiFiClient client, String postBody);
 void handlePowerControl(WiFiClient client, String request);
+// UART2 显示缓冲区操作
 void clearSerialBuffer();
 String takeSerialBufferSnapshot(bool clearBuffer);
 void appendToSerialBuffer(char c);
 void appendToSerialBuffer(const char* str);
 void appendToSerialBuffer(const char* str, int len);
+// UART1 独立显示缓冲区操作
+void clearSerial1Buffer();
+String takeSerial1BufferSnapshot(bool clearBuffer);
+void appendToSerial1Buffer(char c);
+void appendToSerial1Buffer(const char* str);
+void appendToSerial1Buffer(const char* str, int len);
 String formatFileSize(unsigned long bytes);
 String urlDecode(String input);
 
@@ -288,6 +309,7 @@ void handleUART2ToDebug();
 void handleHighSpeedUART();
 void handleHighSpeedUARTWithWebBuffer();
 void initUARTInterrupt(bool reinstall = false);
+void initUART1Interrupt(bool reinstall = false);
 void handleUSBSerial();
 String formatClientData(String data);
 String filterAnsiEscape(String input);
@@ -339,6 +361,9 @@ void setup() {
   // ========== 初始化UART2 ==========
   // 使用DMA驱动，不调用Serial2.begin避免冲突
   initUARTInterrupt();
+
+  // ========== 初始化UART1（IO19/IO20）==========
+  initUART1Interrupt();
   
   if (debugMode) {
     Serial.print("✓ UART2初始化完成，波特率: ");

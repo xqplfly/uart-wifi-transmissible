@@ -14,6 +14,12 @@ void loadConfigFromEEPROM() {
   if (uart2BaudRate < 9600 || uart2BaudRate > 921600) {
     uart2BaudRate = DEFAULT_UART2_BAUD;
   }
+
+  // Load UART1 baud rate
+  EEPROM.get(EEPROM_UART1_BAUD_ADDR, uart1BaudRate);
+  if (uart1BaudRate < 9600 || uart1BaudRate > 921600) {
+    uart1BaudRate = DEFAULT_UART1_BAUD;
+  }
   
   // Load client ID (will be overwritten by chip ID based ID)
   char idBuffer[32];
@@ -44,6 +50,9 @@ void saveModeToEEPROM() {
 void saveConfigToEEPROM() {
   // Save UART2 baud rate
   EEPROM.put(EEPROM_UART2_BAUD_ADDR, uart2BaudRate);
+
+  // Save UART1 baud rate
+  EEPROM.put(EEPROM_UART1_BAUD_ADDR, uart1BaudRate);
   
   // Save client ID
   for (int i = 0; i < client_id.length() && i < 32; i++) {
