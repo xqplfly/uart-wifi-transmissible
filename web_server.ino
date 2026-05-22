@@ -1364,10 +1364,9 @@ void handleSerialDataAPI(WiFiClient client) {
   client.println("Content-Type: text/plain");
   client.println("Cache-Control: no-cache, no-store, must-revalidate");
   client.println();
-  
-  String response = filterAnsiEscape(serialDisplayBuffer);
-  serialDisplayBuffer = "";
-  
+
+  String response = filterAnsiEscape(takeSerialBufferSnapshot(true));
+
   client.print(response);
 }
 
@@ -1431,45 +1430,76 @@ void handleSerialSend(WiFiClient client, String request) {
 }
 
 void handleSerialClear(WiFiClient client) {
-  noInterrupts();
-  serialDisplayBuffer = "";
-  interrupts();
-  
+  clearSerialBuffer();
+
   String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
   html += "<!DOCTYPE html><html><head></head><body></body></html>";
   client.print(html);
 }
 
+void clearSerialBuffer() {
+  portENTER_CRITICAL(&serialDisplayBufferMux);
+  serialDisplayBufferLen = 0;
+  serialDisplayBuffer[0] = '\0';
+  portEXIT_CRITICAL(&serialDisplayBufferMux);
+}
+
+String takeSerialBufferSnapshot(bool clearBuffer) {
+  char localBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1];
+  size_t snapshotLen = 0;
+
+  portENTER_CRITICAL(&serialDisplayBufferMux);
+  snapshotLen = serialDisplayBufferLen;
+  memcpy(localBuffer, serialDisplayBuffer, snapshotLen);
+  localBuffer[snapshotLen] = '\0';
+
+  if (clearBuffer) {
+    serialDisplayBufferLen = 0;
+    serialDisplayBuffer[0] = '\0';
+  }
+  portEXIT_CRITICAL(&serialDisplayBufferMux);
+
+  return String(localBuffer);
+}
+
 void appendToSerialBuffer(char c) {
-  if (c != '\r') {
-    serialDisplayBuffer += String(c);
+  if (c == '\r') {
+    return;
   }
-  if (serialDisplayBuffer.length() > SERIAL_DISPLAY_BUFFER_SIZE) {
-    serialDisplayBuffer = serialDisplayBuffer.substring(serialDisplayBuffer.length() - SERIAL_DISPLAY_BUFFER_SIZE / 2);
-  }
+
+  appendToSerialBuffer(&c, 1);
 }
 
 void appendToSerialBuffer(const char* str) {
-  while (*str) {
-    if (*str != '\r') {
-      serialDisplayBuffer += *str;
-    }
-    str++;
+  if (!str) {
+    return;
   }
-  if (serialDisplayBuffer.length() > SERIAL_DISPLAY_BUFFER_SIZE) {
-    serialDisplayBuffer = serialDisplayBuffer.substring(serialDisplayBuffer.length() - SERIAL_DISPLAY_BUFFER_SIZE / 2);
-  }
+
+  appendToSerialBuffer(str, strlen(str));
 }
 
 void appendToSerialBuffer(const char* str, int len) {
+  if (!str || len <= 0) {
+    return;
+  }
+
+  portENTER_CRITICAL(&serialDisplayBufferMux);
   for (int i = 0; i < len; i++) {
-    if (str[i] != '\r') {
-      serialDisplayBuffer += str[i];
+    if (str[i] == '\r') {
+      continue;
     }
+
+    if (serialDisplayBufferLen >= SERIAL_DISPLAY_BUFFER_SIZE) {
+      size_t keepLen = SERIAL_DISPLAY_BUFFER_SIZE / 2;
+      size_t dropLen = serialDisplayBufferLen - keepLen;
+      memmove(serialDisplayBuffer, serialDisplayBuffer + dropLen, keepLen);
+      serialDisplayBufferLen = keepLen;
+    }
+
+    serialDisplayBuffer[serialDisplayBufferLen++] = str[i];
   }
-  if (serialDisplayBuffer.length() > SERIAL_DISPLAY_BUFFER_SIZE) {
-    serialDisplayBuffer = serialDisplayBuffer.substring(serialDisplayBuffer.length() - SERIAL_DISPLAY_BUFFER_SIZE / 2);
-  }
+  serialDisplayBuffer[serialDisplayBufferLen] = '\0';
+  portEXIT_CRITICAL(&serialDisplayBufferMux);
 }
 
 // 处理串口数据请求（兼容旧接口）

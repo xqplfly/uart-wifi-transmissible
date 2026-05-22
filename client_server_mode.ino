@@ -234,6 +234,8 @@ void initServerMode() {
     }
     clientSerialData[i] = "";
     clientLineBuffer[i] = "";
+    clientSerialData[i].reserve(2200);
+    clientLineBuffer[i].reserve(512);
   }
 }
 
@@ -259,6 +261,8 @@ void runServerMode() {
       serverClients[replaceSlot].stop();
       serverClients[replaceSlot] = newClient;
       clientSerialData[replaceSlot] = "// Reconnected\n";
+      clientSerialData[replaceSlot].reserve(2200);
+      clientLineBuffer[replaceSlot].reserve(512);
       serverClients[replaceSlot].println("Welcome back to ESP32 UART Server");
       if (logToSD && sdCardReady) {
         saveServerSystemLog("Client reconnected: " + newIP.toString());
@@ -266,6 +270,8 @@ void runServerMode() {
     } else if (freeSlot >= 0) {
       serverClients[freeSlot] = newClient;
       clientSerialData[freeSlot] = "// Serial data log\n";
+      clientSerialData[freeSlot].reserve(2200);
+      clientLineBuffer[freeSlot].reserve(512);
       serverClients[freeSlot].println("Welcome to ESP32 UART Server");
       if (logToSD && sdCardReady) {
         saveServerSystemLog("New client connected: " + newIP.toString());
@@ -288,9 +294,7 @@ void runServerMode() {
         size_t readBytes = serverClients[i].read(buf, toRead);
 
         // 写入网页串口显示缓冲区（全局）
-        noInterrupts();
         appendToSerialBuffer((char*)buf, readBytes);
-        interrupts();
         
         // 写入客户端专属缓冲区（用于客户端详情页）
         for (size_t j = 0; j < readBytes; j++) {

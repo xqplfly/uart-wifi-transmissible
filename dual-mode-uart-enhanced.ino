@@ -202,7 +202,9 @@ String uart2RxBuffer = "";  // UART2接收缓冲区
 
 // ========== 串口实时显示缓冲区 ==========
 #define SERIAL_DISPLAY_BUFFER_SIZE  4096
-String serialDisplayBuffer = "";  // Web串口显示缓冲区
+portMUX_TYPE serialDisplayBufferMux = portMUX_INITIALIZER_UNLOCKED;
+char serialDisplayBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1] = {0};  // Web串口显示缓冲区
+size_t serialDisplayBufferLen = 0;
 unsigned long lastSerialUpdate = 0;
 
 // ==================== 函数声明 ====================
@@ -258,6 +260,8 @@ void handleSerialDataAPI(WiFiClient client);
 void handleSerialSend(WiFiClient client, String request);
 void handleSerialClear(WiFiClient client);
 void handlePowerControl(WiFiClient client, String request);
+void clearSerialBuffer();
+String takeSerialBufferSnapshot(bool clearBuffer);
 void appendToSerialBuffer(char c);
 void appendToSerialBuffer(const char* str);
 void appendToSerialBuffer(const char* str, int len);
