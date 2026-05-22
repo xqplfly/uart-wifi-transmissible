@@ -10,6 +10,7 @@
 #include <esp_sleep.h>
 #include <esp_log.h>
 #include <driver/uart.h>
+#include "security_hardening.h"
 
 // ==================== 版本信息 ====================
 #define FIRMWARE_VERSION "v2.5.0"  // 优化串口透传速度，批量写入TCP缓冲区
@@ -40,8 +41,13 @@
 #define MODE_CLIENT   0
 #define MODE_SERVER   1
 
+#define WIFI_SSID_MAX_LEN         32
+#define WIFI_PASSWORD_MAX_LEN     64
+#define CLIENT_ID_MAX_LEN         31
+#define EEPROM_WIFI_CONFIG_MAGIC  0x53
+
 // EEPROM地址分配
-#define EEPROM_SIZE   256
+#define EEPROM_SIZE   512
 #define EEPROM_MODE_ADDR          0
 #define EEPROM_CLIENT_ID_ADDR     10
 #define EEPROM_UART2_BAUD_ADDR    46
@@ -49,8 +55,13 @@
 #define EEPROM_LOWPOWER_TIMEOUT   54
 #define EEPROM_LOGTIME_ADDR       60
 #define EEPROM_DEBUGMODE_ADDR     61
-#define EEPROM_WIFI_SSID_ADDR     70
-#define EEPROM_WIFI_PASS_ADDR     110
+#define EEPROM_WIFI_MAGIC_ADDR    66
+#define EEPROM_AP_SSID_ADDR       70
+#define EEPROM_AP_PASS_ADDR       (EEPROM_AP_SSID_ADDR + WIFI_SSID_MAX_LEN + 1)
+#define EEPROM_STA_SSID_ADDR      (EEPROM_AP_PASS_ADDR + WIFI_PASSWORD_MAX_LEN + 1)
+#define EEPROM_STA_PASS_ADDR      (EEPROM_STA_SSID_ADDR + WIFI_SSID_MAX_LEN + 1)
+#define EEPROM_PORTAL_SSID_ADDR   (EEPROM_STA_PASS_ADDR + WIFI_PASSWORD_MAX_LEN + 1)
+#define EEPROM_PORTAL_PASS_ADDR   (EEPROM_PORTAL_SSID_ADDR + WIFI_SSID_MAX_LEN + 1)
 
 // 按键配置
 #define BUTTON_PIN    0
@@ -96,19 +107,19 @@
 // #define DEEP_SLEEP_CURRENT_LIMIT   0.1   // 深度睡眠目标电流(mA)
 
 // WiFi配置（服务器模式）
-const char* ap_ssid = "ESP32_UART_Server";
-const char* ap_password = "12345678";
+char ap_ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+char ap_password[WIFI_PASSWORD_MAX_LEN + 1] = {0};
 const int server_listen_port = 8080;
 
 // WiFi配置（客户端模式）
-const char* client_wifi_ssid = ap_ssid;  // 使用服务器端的WiFi名称
-const char* client_wifi_password = ap_password;  // 使用服务器端的WiFi密码
+char client_wifi_ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+char client_wifi_password[WIFI_PASSWORD_MAX_LEN + 1] = {0};
 const char* server_ip = "192.168.1.1";  // 服务器模式的IP地址
 const int server_port = 8080;
 
 // 智能配网
-const char* wifimanager_ssid = "ESP32_Config";
-const char* wifimanager_password = "12345678";
+char wifimanager_ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+char wifimanager_password[WIFI_PASSWORD_MAX_LEN + 1] = {0};
 
 // 客户端ID
 String client_id = "ESP32_CLIENT_001";
@@ -230,6 +241,15 @@ void loop();
 void loadConfigFromEEPROM();
 void saveModeToEEPROM();
 void saveConfigToEEPROM();
+void applyDefaultWiFiConfig();
+void applyDefaultClientId();
+bool copyStringToBuffer(const String &value, char *target, size_t targetSize);
+bool validateClientIdValue(const String &value);
+bool validateWiFiSsidValue(const String &value);
+bool validateWiFiPasswordValue(const String &value, bool allowEmpty = false);
+bool hasConfiguredClientWiFi();
+String maskSensitiveValue(const char *value);
+String maskIpAddress(IPAddress address);
 
 // 模式切换
 void switchMode();
@@ -357,6 +377,17 @@ void setup() {
   // 初始化EEPROM（先加载配置，再初始化UART）
   EEPROM.begin(EEPROM_SIZE);
   loadConfigFromEEPROM();
+
+  usbFrameBuffer.reserve(SECURITY_MAX_FRAME_LENGTH);
+  webFrameBuffer.reserve(SECURITY_MAX_FRAME_LENGTH);
+  clientTcpFrameBuffer.reserve(SECURITY_MAX_FRAME_LENGTH);
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    serverTcpFrameBuffers[i].reserve(SECURITY_MAX_FRAME_LENGTH);
+    clearSecurityState(serverTcpSecurityStates[i]);
+  }
+  clearSecurityState(usbSecurityState);
+  clearSecurityState(webSecurityState);
+  clearSecurityState(clientTcpSecurityState);
   
   // ========== 初始化UART2 ==========
   // 使用DMA驱动，不调用Serial2.begin避免冲突
@@ -418,12 +449,10 @@ void setup() {
   }
   yield();
   
-  // 使用芯片ID生成唯一客户端ID
-  uint32_t chipId = 0;
-  for (int i = 0; i < 17; i = i + 8) {
-    chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
+  // 仅在没有有效持久化配置时生成默认客户端ID
+  if (!validateClientIdValue(client_id)) {
+    applyDefaultClientId();
   }
-  client_id = "ESP32_CLIENT_" + String(chipId, HEX);
   
   // 避免重复保存，只在需要时保存
   // saveConfigToEEPROM();  // 注释掉，避免每次启动都保存
@@ -457,6 +486,8 @@ void loop() {
   static unsigned long lastSDCheck = 0;
 
   yield();
+
+  refreshSecurityTimeouts();
 
   handleConfigMode();
   
