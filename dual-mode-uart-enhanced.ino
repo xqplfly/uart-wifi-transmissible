@@ -8,6 +8,7 @@
 #include <SPI.h>
 #include <FastLED.h>
 #include <esp_sleep.h>
+#include <esp_log.h>
 #include <driver/uart.h>
 
 // ==================== 版本信息 ====================
@@ -44,9 +45,12 @@
 #define EEPROM_MODE_ADDR          0
 #define EEPROM_CLIENT_ID_ADDR     10
 #define EEPROM_UART2_BAUD_ADDR    46
+#define EEPROM_UART1_BAUD_ADDR    50  // 占用 50-53（4字节）
 #define EEPROM_LOWPOWER_TIMEOUT   54
-#define EEPROM_WIFI_SSID_ADDR     60
-#define EEPROM_WIFI_PASS_ADDR     100
+#define EEPROM_LOGTIME_ADDR       60
+#define EEPROM_DEBUGMODE_ADDR     61
+#define EEPROM_WIFI_SSID_ADDR     70
+#define EEPROM_WIFI_PASS_ADDR     110
 
 // 按键配置
 #define BUTTON_PIN    0
@@ -57,7 +61,7 @@
 #define CONFIG_MODE_PIN  42   // GPIO2 用于触发配网模式
 
 // 电源和复位控制引脚
-#define POWER_CONTROL_PIN  5   // GPIO3 用于控制开机关机
+#define POWER_CONTROL_PIN  5   // GPIO5 用于控制开机关机
 #define RESET_CONTROL_PIN  4   // GPIO4 用于控制CPU复位
 
 // LED配置
@@ -69,6 +73,11 @@
 #define UART2_RX_PIN  16
 #define UART2_TX_PIN  17
 #define DEFAULT_UART2_BAUD  115200
+
+// ========== UART1配置（新增：IO19/IO20）==========
+#define UART1_RX_PIN  19
+#define UART1_TX_PIN  20
+#define DEFAULT_UART1_BAUD  115200
 
 // SD卡配置
 #define SD_CS_PIN     10
@@ -117,6 +126,9 @@ unsigned long systemStartTime = 0;
 
 // ========== UART2波特率 ==========
 unsigned long uart2BaudRate = DEFAULT_UART2_BAUD;
+
+// ========== UART1波特率 ==========
+unsigned long uart1BaudRate = DEFAULT_UART1_BAUD;
 
 // 按键相关
 unsigned long buttonPressTime = 0;
@@ -172,11 +184,12 @@ bool webServerEnabled = true;
 String logFileName = "uart_log";  // 默认日志文件名
 String logFilePath = "";          // 日志文件完整路径
 bool logToSD = true;              // 是否记录到SD卡
+bool logWithTimestamp = false;    // 是否在每行日志添加时间戳
 unsigned long logFileSize = 0;    // 日志文件大小
 unsigned int logCount = 0;        // 日志条数
 
 // Debug模式控制
-bool debugMode = true;             // 默认开启debug模式
+bool debugMode = false;             // 默认关闭debug模式
 
 // 客户端列表（服务器模式）
 #define MAX_CLIENTS  5
@@ -198,7 +211,14 @@ String uart2RxBuffer = "";  // UART2接收缓冲区
 
 // ========== 串口实时显示缓冲区 ==========
 #define SERIAL_DISPLAY_BUFFER_SIZE  4096
-String serialDisplayBuffer = "";  // Web串口显示缓冲区
+// UART2 显示缓冲区
+portMUX_TYPE serialDisplayBufferMux = portMUX_INITIALIZER_UNLOCKED;
+char serialDisplayBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1] = {0};
+size_t serialDisplayBufferLen = 0;
+// UART1 独立显示缓冲区（与 UART2 完全隔离）
+portMUX_TYPE serial1DisplayBufferMux = portMUX_INITIALIZER_UNLOCKED;
+char serial1DisplayBuffer[SERIAL_DISPLAY_BUFFER_SIZE + 1] = {0};
+size_t serial1DisplayBufferLen = 0;
 unsigned long lastSerialUpdate = 0;
 
 // ==================== 函数声明 ====================
@@ -228,7 +248,7 @@ void powerOnSDCard();
 void createDirectory(String path);
 void saveDataToSD(String data, String clientId, bool isServer);
 void saveServerSystemLog(String data);
-bool enqueueSDLog(String data, String clientId, bool isServer);
+bool enqueueSDLog(String data, String clientId, bool isServer, uint8_t uartChannel = 2);
 void processSDWriteQueue();
 void checkSDCardStatus();
 
@@ -242,7 +262,7 @@ void handleStatusPage(WiFiClient client);
 void handleConfigPage(WiFiClient client);
 void handleDownloadLog(WiFiClient client, String request);
 void handleClearLog(WiFiClient client);
-void handleSaveConfig(WiFiClient client);
+void handleSaveConfig(WiFiClient client, String request);
 void handleClientPage(WiFiClient client, String request);
 void handleClientSend(WiFiClient client, String request);
 void handleDeleteFile(WiFiClient client, String request);
@@ -250,13 +270,22 @@ void handleDeleteDirectory(WiFiClient client, String request);
 bool deleteDirectoryRecursive(String path);
 void handleNotFound(WiFiClient client);
 void handleSerialPage(WiFiClient client);
-void handleSerialDataAPI(WiFiClient client);
+void handleSerialDataAPI(WiFiClient client, String request);
 void handleSerialSend(WiFiClient client, String request);
-void handleSerialClear(WiFiClient client);
+void handleSerialClear(WiFiClient client, String postBody);
 void handlePowerControl(WiFiClient client, String request);
+// UART2 显示缓冲区操作
+void clearSerialBuffer();
+String takeSerialBufferSnapshot(bool clearBuffer);
 void appendToSerialBuffer(char c);
 void appendToSerialBuffer(const char* str);
 void appendToSerialBuffer(const char* str, int len);
+// UART1 独立显示缓冲区操作
+void clearSerial1Buffer();
+String takeSerial1BufferSnapshot(bool clearBuffer);
+void appendToSerial1Buffer(char c);
+void appendToSerial1Buffer(const char* str);
+void appendToSerial1Buffer(const char* str, int len);
 String formatFileSize(unsigned long bytes);
 String urlDecode(String input);
 
@@ -280,6 +309,7 @@ void handleUART2ToDebug();
 void handleHighSpeedUART();
 void handleHighSpeedUARTWithWebBuffer();
 void initUARTInterrupt(bool reinstall = false);
+void initUART1Interrupt(bool reinstall = false);
 void handleUSBSerial();
 String formatClientData(String data);
 String filterAnsiEscape(String input);
@@ -299,19 +329,28 @@ void setup() {
   // 冷启动延迟，等待电源稳定
   delay(500);
   
+  // 默认固件保持串口纯净，关闭底层WiFi噪声日志
+  esp_log_level_set("*", ESP_LOG_ERROR);
+  esp_log_level_set("wifi", ESP_LOG_NONE);
+  esp_log_level_set("wifi_init", ESP_LOG_NONE);
+  
   // 初始化调试串口（优先）
   Serial.begin(115200);
   delay(200);
   
-  Serial.println("\n========================================");
-  Serial.println("  ESP32-S3 UART2透传系统");
-  Serial.println("  版本: " + String(FIRMWARE_VERSION));
-  Serial.println("  功能: 调试串口 ↔ UART2 双向透传");
-  Serial.println("========================================");
+  if (debugMode) {
+    Serial.println("\n========================================");
+    Serial.println("  ESP32-S3 UART2透传系统");
+    Serial.println("  版本: " + String(FIRMWARE_VERSION));
+    Serial.println("  功能: 调试串口 ↔ UART2 双向透传");
+    Serial.println("========================================");
+  }
   
   // 检查是否是冷启动
   if (esp_reset_reason() == ESP_RST_POWERON) {
-    Serial.println("冷启动，额外等待电源稳定...");
+    if (debugMode) {
+      Serial.println("冷启动，额外等待电源稳定...");
+    }
     delay(1000);
   }
   
@@ -322,6 +361,9 @@ void setup() {
   // ========== 初始化UART2 ==========
   // 使用DMA驱动，不调用Serial2.begin避免冲突
   initUARTInterrupt();
+
+  // ========== 初始化UART1（IO19/IO20）==========
+  initUART1Interrupt();
   
   if (debugMode) {
     Serial.print("✓ UART2初始化完成，波特率: ");
@@ -405,24 +447,31 @@ void setup() {
     Serial.println("电池电压: " + String(batteryVoltage) + "V");
     Serial.println("========================================\n");
     
-    printHelp();
+    Serial.println("Type AT+HELP for command list\n");
   }
 }
 
 // ==================== 主循环 ====================
 void loop() {
+  static unsigned long lastBatteryCheck = 0;
+  static unsigned long lastSDCheck = 0;
+
   yield();
+
+  handleConfigMode();
   
   // 处理按键
   handleButton();
   
   // 检查电池
-  if (millis() % 10000 == 0) {  // 每10秒检查一次
+  if (millis() - lastBatteryCheck >= 10000) {
+    lastBatteryCheck = millis();
     checkBattery();
   }
   
   // 检查SD卡状态（热插拔检测）
-  if (millis() % 2000 == 0) {  // 每2秒检查一次
+  if (millis() - lastSDCheck >= 2000) {
+    lastSDCheck = millis();
     checkSDCardStatus();
   }
   

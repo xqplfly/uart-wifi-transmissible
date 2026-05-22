@@ -14,6 +14,12 @@ void loadConfigFromEEPROM() {
   if (uart2BaudRate < 9600 || uart2BaudRate > 921600) {
     uart2BaudRate = DEFAULT_UART2_BAUD;
   }
+
+  // Load UART1 baud rate
+  EEPROM.get(EEPROM_UART1_BAUD_ADDR, uart1BaudRate);
+  if (uart1BaudRate < 9600 || uart1BaudRate > 921600) {
+    uart1BaudRate = DEFAULT_UART1_BAUD;
+  }
   
   // Load client ID (will be overwritten by chip ID based ID)
   char idBuffer[32];
@@ -23,7 +29,17 @@ void loadConfigFromEEPROM() {
     if (idBuffer[i] == 0 || idBuffer[i] == 255) break;
   }
   
-  Serial.println("Config loaded from EEPROM");
+  // Load log timestamp setting
+  logWithTimestamp = (EEPROM.read(EEPROM_LOGTIME_ADDR) == 1);
+
+  int savedDebugMode = EEPROM.read(EEPROM_DEBUGMODE_ADDR);
+  if (savedDebugMode == 0 || savedDebugMode == 1) {
+    debugMode = (savedDebugMode == 1);
+  }
+  
+  if (debugMode) {
+    Serial.println("Config loaded from EEPROM");
+  }
 }
 
 void saveModeToEEPROM() {
@@ -34,6 +50,9 @@ void saveModeToEEPROM() {
 void saveConfigToEEPROM() {
   // Save UART2 baud rate
   EEPROM.put(EEPROM_UART2_BAUD_ADDR, uart2BaudRate);
+
+  // Save UART1 baud rate
+  EEPROM.put(EEPROM_UART1_BAUD_ADDR, uart1BaudRate);
   
   // Save client ID
   for (int i = 0; i < client_id.length() && i < 32; i++) {
@@ -41,8 +60,14 @@ void saveConfigToEEPROM() {
   }
   EEPROM.write(EEPROM_CLIENT_ID_ADDR + client_id.length(), 0);
   
+  // Save log timestamp setting
+  EEPROM.write(EEPROM_LOGTIME_ADDR, logWithTimestamp ? 1 : 0);
+  EEPROM.write(EEPROM_DEBUGMODE_ADDR, debugMode ? 1 : 0);
+  
   EEPROM.commit();
-  Serial.println("Config saved to EEPROM");
+  if (debugMode) {
+    Serial.println("Config saved to EEPROM");
+  }
 }
 
 // ==================== Mode Switch ====================

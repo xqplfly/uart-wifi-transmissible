@@ -42,7 +42,9 @@ void checkBattery() {
   if (batteryVoltage < BATTERY_LOW_VOLTAGE && batteryVoltage > 2.0) {
     if (!lowBattery) {
       lowBattery = true;
-      Serial.println("! Low battery warning! Voltage: " + String(batteryVoltage) + "V");
+      if (debugMode) {
+        Serial.println("! Low battery warning! Voltage: " + String(batteryVoltage) + "V");
+      }
       for (int i = 0; i < 5; i++) {
         setLED(CRGB(255, 0, 0));
         delay(200);
@@ -58,39 +60,26 @@ void checkBattery() {
 // ==================== SD Card Status Check ====================
 void checkSDCardStatus() {
   static bool lastSDCardReady = sdCardReady;
+  static unsigned long lastCheck = 0;
+  
+  if (millis() - lastCheck < 5000) return;
+  lastCheck = millis();
 
   if (sdCardReady) {
-    File root = SD.open("/");
-    if (!root) {
+    if (!SD.exists("/")) {
       sdCardReady = false;
       sdCardError = true;
-      if (lastSDCardReady) {
-        if (currentMode == MODE_SERVER) {
-          Serial.println("! SD card removed!");
-          Serial.println("! Logging paused");
-        }
-        for (int i = 0; i < 3; i++) {
-          setLED(CRGB(255, 0, 0));
-          delay(200);
-          setLED(CRGB(0, 0, 0));
-          delay(200);
-        }
+      if (lastSDCardReady && debugMode) {
+        Serial.println("! SD card removed!");
+        Serial.println("! Logging paused");
       }
-    } else {
-      root.close();
     }
   } else {
     initSDCard();
     if (sdCardReady && !lastSDCardReady) {
-      if (currentMode == MODE_SERVER) {
+      if (debugMode) {
         Serial.println("! SD card reconnected!");
         Serial.println("! Logging resumed");
-      }
-      for (int i = 0; i < 3; i++) {
-        setLED(CRGB(0, 255, 0));
-        delay(200);
-        setLED(CRGB(0, 0, 0));
-        delay(200);
       }
     }
   }
@@ -116,9 +105,11 @@ void initSDCard() {
 
     if (currentMode == MODE_CLIENT) {
       createDirectory("/client_local");
+      createDirectory("/client_u1");    // UART1 日志目录
     } else {
       createDirectory("/server");
       createDirectory("/server/system");
+      createDirectory("/server/uart1"); // UART1 日志目录
     }
   } else {
     sdCardReady = false;
@@ -135,7 +126,9 @@ void powerOffSDCard() {
     SD.end();
     digitalWrite(SD_POWER_PIN, LOW);
     sdCardReady = false;
-    Serial.println("SD card powered off");
+    if (debugMode) {
+      Serial.println("SD card powered off");
+    }
   }
 }
 
@@ -150,7 +143,9 @@ void powerOnSDCard() {
 void createDirectory(String path) {
   if (sdCardReady && !SD.exists(path)) {
     SD.mkdir(path);
-    Serial.println("  Created directory: " + path);
+    if (debugMode) {
+      Serial.println("  Created directory: " + path);
+    }
   }
 }
 
@@ -253,6 +248,7 @@ typedef struct {
   String data;
   String clientId;
   bool isServer;
+  uint8_t uartChannel;  // 1=UART1, 2=UART2(默认)
 } SDLogEntry;
 
 SDLogEntry sdWriteQueue[SD_WRITE_QUEUE_SIZE];
@@ -261,15 +257,38 @@ int sdQueueTail = 0;
 int sdQueueCount = 0;
 unsigned long lastSDWriteTime = 0;
 
-bool enqueueSDLog(String data, String clientId, bool isServer) {
+String getLogTimestamp() {
+  // 如果有RTC时间可以使用，应该先检查RTC
+  // 这里使用系统运行时间作为时间戳
+  unsigned long uptime = millis();
+  unsigned long seconds = uptime / 1000;
+  unsigned long hours = seconds / 3600;
+  unsigned long minutes = (seconds % 3600) / 60;
+  unsigned long secs = seconds % 60;
+  unsigned long ms = uptime % 1000;
+  
+  char buf[32];
+  snprintf(buf, sizeof(buf), "[%02lu:%02lu:%02lu.%03lu]", hours, minutes, secs, ms);
+  return String(buf);
+}
+
+bool enqueueSDLog(String data, String clientId, bool isServer, uint8_t uartChannel) {
   if (!sdCardReady || data.length() == 0) return false;
   if (sdQueueCount >= SD_WRITE_QUEUE_SIZE) return false;
   
   // 过滤ANSI转义序列后再保存
   String filteredData = filterAnsiEscape(data);
+  
+  // 如果开启时间戳，在数据前添加时间
+  if (logWithTimestamp) {
+    String timestamp = getLogTimestamp();
+    filteredData = timestamp + " " + filteredData;
+  }
+  
   sdWriteQueue[sdQueueHead].data = filteredData;
   sdWriteQueue[sdQueueHead].clientId = clientId;
   sdWriteQueue[sdQueueHead].isServer = isServer;
+  sdWriteQueue[sdQueueHead].uartChannel = uartChannel;
   sdQueueHead = (sdQueueHead + 1) % SD_WRITE_QUEUE_SIZE;
   sdQueueCount++;
   return true;
@@ -298,14 +317,27 @@ void processSDWriteQueue() {
     entry.clientId.toCharArray(safeClientId, sizeof(safeClientId));
     sanitizeFilenameInPlace(safeClientId);
     
-    if (entry.isServer) {
-      snprintf(clientDir, sizeof(clientDir), "/server/%s", safeClientId);
+    if (entry.uartChannel == 1) {
+      // UART1 存入独立目录，与 UART2 完全隔离
+      if (entry.isServer) {
+        snprintf(clientDir, sizeof(clientDir), "/server/uart1");
+        createDirectory("/server/uart1");
+      } else {
+        snprintf(clientDir, sizeof(clientDir), "/client_u1");
+        createDirectory("/client_u1");
+      }
       snprintf(path, sizeof(path), "%s/%s_%s.txt",
                clientDir, logFileName.c_str(), getDateString().c_str());
     } else {
-      snprintf(clientDir, sizeof(clientDir), "/client_local");
-      snprintf(path, sizeof(path), "%s/%s_%s.txt",
-               clientDir, logFileName.c_str(), getDateString().c_str());
+      if (entry.isServer) {
+        snprintf(clientDir, sizeof(clientDir), "/server/%s", safeClientId);
+        snprintf(path, sizeof(path), "%s/%s_%s.txt",
+                 clientDir, logFileName.c_str(), getDateString().c_str());
+      } else {
+        snprintf(clientDir, sizeof(clientDir), "/client_local");
+        snprintf(path, sizeof(path), "%s/%s_%s.txt",
+                 clientDir, logFileName.c_str(), getDateString().c_str());
+      }
     }
     
     File file = SD.open(path, FILE_APPEND);

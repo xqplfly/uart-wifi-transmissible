@@ -1,4 +1,6 @@
 // ==================== Smart WiFi Config ====================
+extern int selectedClientIndex;
+
 void startConfigMode() {
   Serial.println("\nEntering WiFi config mode...");
   Serial.println("Please connect to WiFi: " + String(wifimanager_ssid));
@@ -63,45 +65,34 @@ void configModeCallback(WiFiManager *myWiFiManager) {
 
 // ==================== Client Mode ====================
 void initClientMode() {
-  Serial.println("Initializing client mode...");
+  if (debugMode) {
+    Serial.println("Initializing client mode...");
+  }
 
   pinMode(CONFIG_MODE_PIN, INPUT_PULLUP);
   if (digitalRead(CONFIG_MODE_PIN) == LOW) {
-    Serial.println("Config mode triggered, entering WiFi config...");
+    if (debugMode) {
+      Serial.println("Config mode triggered, entering WiFi config...");
+    }
     startConfigMode();
     return;
   }
 
-  WiFi.begin(client_wifi_ssid, client_wifi_password);
-
-  unsigned long startTime = millis();
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(100);
-    yield();
-    if (debugMode) {
-      Serial.print(".");
-    }
-
-    if (millis() - startTime > 15000) {
-      Serial.println("\nWiFi connection timeout, starting config mode...");
-      startConfigMode();
-      return;
-    }
-  }
-
-  wifiConnected = true;
-  Serial.println("\nWiFi connected");
-  Serial.println("  Client IP: " + WiFi.localIP().toString());
-
-  connectToServer();
+  wifiConnected = false;
+  tcpConnected = false;
+  WiFi.mode(WIFI_STA);
 }
 
 void connectToServer() {
-  Serial.print("Connecting to server (" + String(server_ip) + ":" + String(server_port) + ")...");
+  if (debugMode) {
+    Serial.print("Connecting to server (" + String(server_ip) + ":" + String(server_port) + ")...");
+  }
 
   if (tcpClient.connect(server_ip, server_port)) {
     tcpConnected = true;
-    Serial.println(" Success");
+    if (debugMode) {
+      Serial.println(" Success");
+    }
 
     String clientInfo = "CLIENT_ID:" + client_id + "|TIMESTAMP:" + String(millis());
     tcpClient.println(clientInfo);
@@ -111,29 +102,42 @@ void connectToServer() {
     }
   } else {
     tcpConnected = false;
-    Serial.println(" Failed");
+    if (debugMode) {
+      Serial.println(" Failed");
+    }
   }
 }
 
 void runClientMode() {
   static unsigned long lastConnectAttempt = 0;
+  static unsigned long wifiConnectStart = 0;
+  static bool wifiConnecting = false;
   const unsigned long reconnectionInterval = 5000;
+  const unsigned long wifiConnectTimeout = 15000;
   static String tcpLineBuffer = "";
 
-  if (!wifiConnected || WiFi.status() != WL_CONNECTED) {
+  wl_status_t wifiStatus = WiFi.status();
+
+  if (!wifiConnected || wifiStatus != WL_CONNECTED) {
     wifiConnected = false;
     tcpConnected = false;
-    WiFi.begin(client_wifi_ssid, client_wifi_password);
 
-    unsigned long startTime = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {
-      delay(10);
-      yield();
+    if (!wifiConnecting && (wifiStatus == WL_IDLE_STATUS || wifiStatus == WL_DISCONNECTED || wifiStatus == WL_NO_SSID_AVAIL || wifiStatus == WL_CONNECT_FAILED)) {
+      wifiConnecting = true;
+      wifiConnectStart = millis();
+      WiFi.begin(client_wifi_ssid, client_wifi_password);
     }
 
-    if (WiFi.status() == WL_CONNECTED) {
+    if (wifiStatus == WL_CONNECTED) {
       wifiConnected = true;
+      wifiConnecting = false;
+      if (debugMode) {
+        Serial.println("WiFi connected");
+        Serial.println("  Client IP: " + WiFi.localIP().toString());
+      }
       connectToServer();
+    } else if (millis() - wifiConnectStart > wifiConnectTimeout) {
+      wifiConnecting = false;
     }
   }
 
@@ -170,7 +174,9 @@ void runClientMode() {
   }
 
   if (tcpConnected && !tcpClient.connected()) {
-    Serial.println("TCP disconnected");
+    if (debugMode) {
+      Serial.println("TCP disconnected");
+    }
     tcpClient.stop();
     tcpConnected = false;
   }
@@ -178,7 +184,9 @@ void runClientMode() {
 
 // ==================== Server Mode ====================
 void initServerMode() {
-  Serial.println("Initializing server mode...");
+  if (debugMode) {
+    Serial.println("Initializing server mode...");
+  }
 
   delay(200);
 
@@ -193,23 +201,29 @@ void initServerMode() {
 
   if (WiFi.softAP(ap_ssid, ap_password)) {
     wifiConnected = true;
-    Serial.println("WiFi AP started");
-    Serial.println("  AP SSID: " + String(ap_ssid));
-    Serial.println("  AP IP: " + WiFi.softAPIP().toString());
+    if (debugMode) {
+      Serial.println("WiFi AP started");
+      Serial.println("  AP SSID: " + String(ap_ssid));
+      Serial.println("  AP IP: " + WiFi.softAPIP().toString());
+    }
     if (logToSD && sdCardReady) {
       saveServerSystemLog("WiFi AP started - SSID: " + String(ap_ssid) + ", IP: " + WiFi.softAPIP().toString());
     }
   } else {
     wifiConnected = false;
-    Serial.println("WiFi AP failed to start");
+    if (debugMode) {
+      Serial.println("WiFi AP failed to start");
+    }
     if (logToSD && sdCardReady) {
       saveServerSystemLog("WiFi AP failed to start");
     }
   }
 
   tcpServer.begin();
-  Serial.println("TCP server started");
-  Serial.println("  Listen port: " + String(server_listen_port));
+  if (debugMode) {
+    Serial.println("TCP server started");
+    Serial.println("  Listen port: " + String(server_listen_port));
+  }
   if (logToSD && sdCardReady) {
     saveServerSystemLog("TCP server started on port " + String(server_listen_port));
   }
@@ -220,6 +234,8 @@ void initServerMode() {
     }
     clientSerialData[i] = "";
     clientLineBuffer[i] = "";
+    clientSerialData[i].reserve(2200);
+    clientLineBuffer[i].reserve(512);
   }
 }
 
@@ -245,6 +261,8 @@ void runServerMode() {
       serverClients[replaceSlot].stop();
       serverClients[replaceSlot] = newClient;
       clientSerialData[replaceSlot] = "// Reconnected\n";
+      clientSerialData[replaceSlot].reserve(2200);
+      clientLineBuffer[replaceSlot].reserve(512);
       serverClients[replaceSlot].println("Welcome back to ESP32 UART Server");
       if (logToSD && sdCardReady) {
         saveServerSystemLog("Client reconnected: " + newIP.toString());
@@ -252,6 +270,8 @@ void runServerMode() {
     } else if (freeSlot >= 0) {
       serverClients[freeSlot] = newClient;
       clientSerialData[freeSlot] = "// Serial data log\n";
+      clientSerialData[freeSlot].reserve(2200);
+      clientLineBuffer[freeSlot].reserve(512);
       serverClients[freeSlot].println("Welcome to ESP32 UART Server");
       if (logToSD && sdCardReady) {
         saveServerSystemLog("New client connected: " + newIP.toString());
@@ -273,13 +293,8 @@ void runServerMode() {
         uint8_t buf[256];
         size_t readBytes = serverClients[i].read(buf, toRead);
 
-        // 先写入服务器调试串口显示
-        Serial.write((char*)buf, readBytes);
-        
         // 写入网页串口显示缓冲区（全局）
-        noInterrupts();
         appendToSerialBuffer((char*)buf, readBytes);
-        interrupts();
         
         // 写入客户端专属缓冲区（用于客户端详情页）
         for (size_t j = 0; j < readBytes; j++) {
@@ -288,8 +303,11 @@ void runServerMode() {
           }
         }
         
-        // 透传到服务器UART2（可选）
-        uart_write_bytes(UART_NUM_2, (const char *)buf, readBytes);
+        // 只有选中客户端时才透传到UART2和调试串口
+        if (selectedClientIndex >= 0 && selectedClientIndex == i) {
+          Serial.write((char*)buf, readBytes);
+          uart_write_bytes(UART_NUM_2, (const char *)buf, readBytes);
+        }
 
         // 记录日志到SD卡
         for (size_t j = 0; j < readBytes; j++) {

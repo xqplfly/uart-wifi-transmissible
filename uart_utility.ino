@@ -2,6 +2,33 @@
 
 #define UART_BUFFER_SIZE 1024
 
+bool isATPlusCandidate(const String &buffer) {
+  if (buffer.length() > 3) {
+    return false;
+  }
+
+  if (buffer.length() >= 1 && buffer[0] != 'A' && buffer[0] != 'a') {
+    return false;
+  }
+
+  if (buffer.length() >= 2 && buffer[1] != 'T' && buffer[1] != 't') {
+    return false;
+  }
+
+  if (buffer.length() == 3 && buffer[2] != '+') {
+    return false;
+  }
+
+  return true;
+}
+
+bool hasATPlusPrefix(const String &buffer) {
+  return buffer.length() >= 3 &&
+         (buffer[0] == 'A' || buffer[0] == 'a') &&
+         (buffer[1] == 'T' || buffer[1] == 't') &&
+         buffer[2] == '+';
+}
+
 void handleUART2ToDebug() {
   // Handle UART2 receive from ring buffer, send to debug serial
   // This uses the interrupt-driven ring buffer from uart_interrupt.ino
@@ -9,52 +36,92 @@ void handleUART2ToDebug() {
 }
 
 void handleUSBSerial() {
-  static String inputBuffer = "";
+  static String commandBuffer = "";
+  static String logBuffer = "";
+  static uint8_t txBuffer[128];
+  int txLen = 0;
   
   while (Serial.available()) {
     char incoming = Serial.read();
-    
-    // 服务器模式：发送到选中的客户端（TCP），客户端会转发到其UART2
+
+    bool collectingAT = commandBuffer.length() > 0 && isATPlusCandidate(commandBuffer);
+
+    if (commandBuffer.length() == 0 && (incoming == 'A' || incoming == 'a')) {
+      commandBuffer += incoming;
+      continue;
+    }
+
+    if (collectingAT && incoming != '\r' && incoming != '\n') {
+      commandBuffer += incoming;
+      if (!isATPlusCandidate(commandBuffer) && !hasATPlusPrefix(commandBuffer)) {
+        for (int i = 0; i < commandBuffer.length(); i++) {
+          if (txLen >= (int)sizeof(txBuffer)) {
+            uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
+            txLen = 0;
+          }
+          txBuffer[txLen++] = (uint8_t)commandBuffer[i];
+          if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
+            queueTCPWrite((uint8_t)commandBuffer[i]);
+          }
+        }
+        if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
+          logBuffer += commandBuffer;
+        }
+        commandBuffer = "";
+      }
+      continue;
+    }
+
+    if (hasATPlusPrefix(commandBuffer)) {
+      if (incoming == '\n' || incoming == '\r') {
+        String command = commandBuffer;
+        command.trim();
+        handleCommand(command);
+        commandBuffer = "";
+        continue;
+      }
+
+      commandBuffer += incoming;
+      if (commandBuffer.length() > UART_BUFFER_SIZE) {
+        commandBuffer = "";
+      }
+      continue;
+    }
+
+    if (txLen >= (int)sizeof(txBuffer)) {
+      uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
+      txLen = 0;
+    }
+
+    txBuffer[txLen++] = (uint8_t)incoming;
     if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
       queueTCPWrite((uint8_t)incoming);
     }
-    
-    // 同时也发送到本地UART2（透传）
-    uart_write_bytes(UART_NUM_2, &incoming, 1);
-    
-    // 客户端模式：记录发送的日志到SD卡
+
     if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
       if (incoming == '\n') {
-        if (inputBuffer.length() > 1) {
-          enqueueSDLog(inputBuffer, client_id, false);
+        String command = logBuffer;
+        command.trim();
+        if (command.length() > 0) {
+          enqueueSDLog(command, client_id, false);
         }
-        inputBuffer = "";
+        logBuffer = "";
       } else if (incoming != '\r') {
-        inputBuffer += incoming;
+        logBuffer += incoming;
       }
-    }
-    
-    // 收集字符用于AT命令检查
-    if (!(currentMode == MODE_CLIENT && logToSD && sdCardReady)) {
-      inputBuffer += incoming;
-    }
-    
-    // 检查是否是换行或回车（命令结束）
-    if (incoming == '\n' || incoming == '\r') {
-      String command = inputBuffer;
-      command.trim();
-      
-      // 检查是否是AT命令
-      if (command.startsWith("AT") || command.startsWith("at")) {
-        handleCommand(command);
-      }
-      inputBuffer = "";
     }
     
     // 限制缓冲区大小
-    if (inputBuffer.length() > UART_BUFFER_SIZE) {
-      inputBuffer = "";
+    if (commandBuffer.length() > UART_BUFFER_SIZE) {
+      commandBuffer = "";
     }
+    if (logBuffer.length() > UART_BUFFER_SIZE) {
+      logBuffer = "";
+    }
+  }
+
+  if (txLen > 0) {
+    uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
   }
 }
 
@@ -84,12 +151,25 @@ void handleCommand(String command) {
     Serial.println("  TCP: " + String(tcpConnected ? "Connected" : "Disconnected"));
     Serial.println("  SD Card: " + String(sdCardReady ? "Ready" : "Not Ready"));
     Serial.println("  Log: " + logFileName + " (" + String(logCount) + " entries)");
+    Serial.println("  Log Timestamp: " + String(logWithTimestamp ? "ON" : "OFF"));
     Serial.println("  Battery: " + String(batteryVoltage) + "V" + (lowBattery ? " (Low)" : ""));
+    Serial.println("  UART2 Baud: " + String(uart2BaudRate));
+    Serial.println("  UART1 Baud: " + String(uart1BaudRate));
   } else if (command.startsWith("AT+LOGNAME ")) {
     String newName = command.substring(10);
     logFileName = newName;
     saveConfigToEEPROM();
     Serial.println("OK Log filename set to: " + logFileName);
+  } else if (command == "AT+LOGTIME=ON") {
+    logWithTimestamp = true;
+    saveConfigToEEPROM();
+    Serial.println("OK Log timestamp enabled");
+  } else if (command == "AT+LOGTIME=OFF") {
+    logWithTimestamp = false;
+    saveConfigToEEPROM();
+    Serial.println("OK Log timestamp disabled");
+  } else if (command == "AT+LOGTIME?") {
+    Serial.println("Log timestamp: " + String(logWithTimestamp ? "ON" : "OFF"));
   } else if (command.startsWith("AT+BAUD ")) {
     String baudStr = command.substring(8);
     unsigned long newBaud = baudStr.toInt();
@@ -98,6 +178,17 @@ void handleCommand(String command) {
       initUARTInterrupt(true);
       saveConfigToEEPROM();
       Serial.println("OK UART2 baud rate set to: " + String(uart2BaudRate));
+    } else {
+      Serial.println("X Invalid baud rate");
+    }
+  } else if (command.startsWith("AT+BAUD1 ")) {
+    String baudStr = command.substring(9);
+    unsigned long newBaud = baudStr.toInt();
+    if (newBaud >= 9600 && newBaud <= 921600) {
+      uart1BaudRate = newBaud;
+      initUART1Interrupt(true);
+      saveConfigToEEPROM();
+      Serial.println("OK UART1 baud rate set to: " + String(uart1BaudRate));
     } else {
       Serial.println("X Invalid baud rate");
     }
@@ -145,6 +236,30 @@ void handleCommand(String command) {
     String indexStr = command.substring(10);
     int index = indexStr.toInt();
     selectClient(index);
+  } else if (command == "AT+CPU") {
+    // Display CPU and memory usage
+    Serial.println("\n=== CPU & Memory Status ===");
+    Serial.println("  CPU Frequency: " + String(ESP.getCpuFreqMHz()) + " MHz");
+    Serial.println("  CPU Cores: " + String(ESP.getChipCores()));
+    Serial.println("  Chip Model: " + String(ESP.getChipModel()));
+    Serial.println("  Chip Revision: " + String(ESP.getChipRevision()));
+    Serial.println("  Flash Size: " + String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB");
+    Serial.println("  Flash Speed: " + String(ESP.getFlashChipSpeed() / 1000000) + " MHz");
+    
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t totalHeap = ESP.getHeapSize();
+    Serial.println("  Heap Memory: " + String(freeHeap) + " / " + String(totalHeap) + " bytes");
+    Serial.println("  Heap Usage: " + String((totalHeap - freeHeap) * 100 / totalHeap) + "%");
+    
+    Serial.println("  Free Sketch Space: " + String(ESP.getFreeSketchSpace() / 1024) + " KB");
+    
+    #ifdef ARDUINO_ESP32S3_DEV
+    Serial.println("  PSRAM Size: " + String(ESP.getPsramSize() / (1024 * 1024)) + " MB");
+    Serial.println("  Free PSRAM: " + String(ESP.getFreePsram() / 1024) + " KB");
+    #endif
+    
+    Serial.println("  Uptime: " + String(millis() / 1000) + " seconds");
+    Serial.println("  WiFi Mode: " + String(WiFi.getMode() == WIFI_AP ? "AP" : (WiFi.getMode() == WIFI_STA ? "STA" : "AP+STA")));
   } else if (command == "AT+CLIENTS") {
     if (currentMode == MODE_SERVER) {
       int count = getConnectedClientCount();
@@ -279,7 +394,7 @@ String getDateString() {
 // ==================== Power Control Functions ====================
 void powerOn() {
   Serial.println("-> Power ON operation...");
-  // Pull GPIO low for 1 second in power-off mode
+  // Pull GPIO low for 1 second
   digitalWrite(POWER_CONTROL_PIN, LOW);
   delay(1000);
   digitalWrite(POWER_CONTROL_PIN, HIGH);
@@ -288,17 +403,16 @@ void powerOn() {
 
 void powerOff() {
   Serial.println("-> Power OFF operation...");
-  // Pull GPIO low for 5 seconds to force power off
-  Serial.println("!! Executing power off, pulling GPIO low for 5 seconds...");
+  // Pull GPIO low for 1 second
   digitalWrite(POWER_CONTROL_PIN, LOW);
-  delay(5000);
+  delay(1000);
   digitalWrite(POWER_CONTROL_PIN, HIGH);
   Serial.println("OK Power OFF operation complete");
 }
 
 void triggerShutdown() {
   Serial.println("-> Trigger shutdown hint...");
-  // Pull low for 1 second as button hint
+  // Pull GPIO low for 1 second
   digitalWrite(POWER_CONTROL_PIN, LOW);
   delay(1000);
   digitalWrite(POWER_CONTROL_PIN, HIGH);
@@ -307,9 +421,9 @@ void triggerShutdown() {
 
 void resetCPU() {
   Serial.println("-> Reset operation...");
-  // Pull low to reset
+  // Pull GPIO low for 1 second
   digitalWrite(RESET_CONTROL_PIN, LOW);
-  delay(100);
+  delay(1000);
   digitalWrite(RESET_CONTROL_PIN, HIGH);
   Serial.println("OK Reset operation complete");
 }
@@ -320,11 +434,14 @@ void printHelp() {
   Serial.println("  AT+SWITCH       - Switch working mode");
   Serial.println("  AT+RESET        - Reset to default settings");
   Serial.println("  AT+STATUS       - Show system status");
+  Serial.println("  AT+CPU          - Show CPU & memory status");
   Serial.println("  AT+CLIENTS      - Show connected clients (server mode)");
   Serial.println("  AT+SELECT       - Show selectable client list");
   Serial.println("  AT+SELECT <id>  - Select client for transparent mode (-1 to cancel)");
   Serial.println("  AT+LOGNAME <name> - Set log filename");
+  Serial.println("  AT+LOGTIME=ON/OFF - Enable/disable timestamp in log");
   Serial.println("  AT+BAUD <rate>  - Set UART2 baud rate");
+  Serial.println("  AT+BAUD1 <rate> - Set UART1 baud rate (IO19/IO20)");
   Serial.println("  AT+DEBUG=ON/OFF - Enable/disable debug mode");
   Serial.println("  AT+RESTART      - Restart system");
   Serial.println("  AT+CONFIG       - Enter WiFi config mode (non-blocking)");
