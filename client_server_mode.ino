@@ -1,10 +1,26 @@
 // ==================== Smart WiFi Config ====================
 extern int selectedClientIndex;
 
+bool saveConfiguredStationCredentials(const String &ssid, const String &password) {
+  if (!validateWiFiSsidValue(ssid) || !validateWiFiPasswordValue(password, false)) {
+    return false;
+  }
+
+  return copyStringToBuffer(ssid, client_wifi_ssid, sizeof(client_wifi_ssid)) &&
+         copyStringToBuffer(password, client_wifi_password, sizeof(client_wifi_password));
+}
+
+bool isServerAccessPointHealthy() {
+  wifi_mode_t wifiMode = WiFi.getMode();
+  IPAddress apAddress = WiFi.softAPIP();
+  bool apModeActive = wifiMode == WIFI_AP || wifiMode == WIFI_AP_STA;
+  return apModeActive && apAddress != IPAddress(0, 0, 0, 0);
+}
+
 void startConfigMode() {
   Serial.println("\nEntering WiFi config mode...");
-  Serial.println("Please connect to WiFi: " + String(wifimanager_ssid));
-  Serial.println("Password: " + String(wifimanager_password));
+  Serial.println("Temporary config WiFi is active");
+  Serial.println("Portal SSID: " + maskSensitiveValue(wifimanager_ssid));
   Serial.println("Then visit: http://192.168.4.1");
   Serial.println("You can continue using AT commands during config");
   Serial.println("Type AT+EXITCONFIG to exit config mode");
@@ -28,9 +44,18 @@ void handleConfigMode() {
   wm.process();
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nOK WiFi config successful!");
-    Serial.println("  SSID: " + WiFi.SSID());
-    Serial.println("  IP: " + WiFi.localIP().toString());
+    String configuredSsid = WiFi.SSID();
+    String configuredPassword = WiFi.psk();
+    if (!saveConfiguredStationCredentials(configuredSsid, configuredPassword)) {
+      Serial.println("\nX Config rejected by security policy");
+      WiFi.disconnect(true, false);
+      wm.stopConfigPortal();
+      inConfigMode = false;
+      return;
+    }
+
+    saveConfigToEEPROM();
+    Serial.println("\nOK WiFi config saved securely");
     inConfigMode = false;
     wm.stopConfigPortal();
 
@@ -63,6 +88,68 @@ void configModeCallback(WiFiManager *myWiFiManager) {
   setLED(CRGB(255, 255, 0));
 }
 
+void handleValidatedClientPayload(const String &payload) {
+  if (!sendValidatedPayloadToUART(UART_NUM_2, payload)) {
+    recordSecurityFailure(clientTcpSecurityState);
+    return;
+  }
+
+  appendToSerialBuffer((char *)payload.c_str(), payload.length());
+
+  if (logToSD && sdCardReady) {
+    enqueueSDLog(payload, client_id, false);
+  }
+}
+
+bool processClientIngress(const uint8_t *buf, size_t readBytes) {
+  String errorReason;
+  if (!appendIngressChunk(SECURITY_SOURCE_TCP_CLIENT, -1, buf, readBytes, errorReason)) {
+    return false;
+  }
+
+  String payload;
+  while (getValidatedPayload(SECURITY_SOURCE_TCP_CLIENT, -1, payload, errorReason)) {
+    handleValidatedClientPayload(payload);
+  }
+
+  return true;
+}
+
+void handleValidatedServerPayload(int clientIndex, const String &payload) {
+  appendToSerialBuffer((char *)payload.c_str(), payload.length());
+
+  clientSerialData[clientIndex] += payload;
+  clientSerialData[clientIndex] += '\n';
+
+  if (selectedClientIndex >= 0 && selectedClientIndex == clientIndex) {
+    Serial.write((const uint8_t *)payload.c_str(), payload.length());
+    sendValidatedPayloadToUART(UART_NUM_2, payload);
+  }
+
+  if (logToSD && sdCardReady) {
+    String clientId = "client_" + String(clientIndex);
+    enqueueSDLog(payload, clientId, true);
+  }
+
+  if (clientSerialData[clientIndex].length() > 2000) {
+    clientSerialData[clientIndex] = clientSerialData[clientIndex].substring(clientSerialData[clientIndex].length() - 1500);
+  }
+}
+
+bool processServerIngress(int clientIndex, const uint8_t *buf, size_t readBytes) {
+  String errorReason;
+  if (!appendIngressChunk(SECURITY_SOURCE_TCP_SERVER, clientIndex, buf, readBytes, errorReason)) {
+    return false;
+  }
+
+  String payload;
+  while (getValidatedPayload(SECURITY_SOURCE_TCP_SERVER, clientIndex, payload, errorReason)) {
+    handleValidatedServerPayload(clientIndex, payload);
+  }
+
+  return true;
+}
+
 // ==================== Client Mode ====================
 void initClientMode() {
   if (debugMode) {
@@ -81,11 +168,16 @@ void initClientMode() {
   wifiConnected = false;
   tcpConnected = false;
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+
+  if (!hasConfiguredClientWiFi()) {
+    startConfigMode();
+  }
 }
 
 void connectToServer() {
   if (debugMode) {
-    Serial.print("Connecting to server (" + String(server_ip) + ":" + String(server_port) + ")...");
+    Serial.print("Connecting to protected server channel...");
   }
 
   if (tcpClient.connect(server_ip, server_port)) {
@@ -95,11 +187,7 @@ void connectToServer() {
     }
 
     String clientInfo = "CLIENT_ID:" + client_id + "|TIMESTAMP:" + String(millis());
-    tcpClient.println(clientInfo);
-
-    if (debugMode) {
-      Serial.println("  Client ID: " + client_id);
-    }
+    sendFramedPayloadToClient(tcpClient, clientInfo);
   } else {
     tcpConnected = false;
     if (debugMode) {
@@ -110,41 +198,88 @@ void connectToServer() {
 
 void runClientMode() {
   static unsigned long lastConnectAttempt = 0;
+  static unsigned long lastWiFiAttempt = 0;
   static unsigned long wifiConnectStart = 0;
   static bool wifiConnecting = false;
+  static uint8_t wifiFailureCount = 0;
+  static uint8_t tcpFailureCount = 0;
   const unsigned long reconnectionInterval = 5000;
   const unsigned long wifiConnectTimeout = 15000;
-  static String tcpLineBuffer = "";
+
+  if (!hasConfiguredClientWiFi()) {
+    wifiConnected = false;
+    tcpConnected = false;
+    if (!inConfigMode) {
+      startConfigMode();
+    }
+    return;
+  }
 
   wl_status_t wifiStatus = WiFi.status();
+  bool wasWifiConnected = wifiConnected;
 
   if (!wifiConnected || wifiStatus != WL_CONNECTED) {
     wifiConnected = false;
-    tcpConnected = false;
+    if (tcpConnected) {
+      tcpClient.stop();
+      clientTcpFrameBuffer = "";
+      clearSecurityState(clientTcpSecurityState);
+      tcpConnected = false;
+    }
 
-    if (!wifiConnecting && (wifiStatus == WL_IDLE_STATUS || wifiStatus == WL_DISCONNECTED || wifiStatus == WL_NO_SSID_AVAIL || wifiStatus == WL_CONNECT_FAILED)) {
+    if (!wifiConnecting && millis() - lastWiFiAttempt >= reconnectionInterval &&
+        (wifiStatus == WL_IDLE_STATUS || wifiStatus == WL_DISCONNECTED || wifiStatus == WL_NO_SSID_AVAIL || wifiStatus == WL_CONNECT_FAILED)) {
       wifiConnecting = true;
       wifiConnectStart = millis();
+      lastWiFiAttempt = millis();
+      WiFi.disconnect(false, false);
       WiFi.begin(client_wifi_ssid, client_wifi_password);
     }
 
     if (wifiStatus == WL_CONNECTED) {
       wifiConnected = true;
       wifiConnecting = false;
+      wifiFailureCount = 0;
+      tcpFailureCount = 0;
       if (debugMode) {
         Serial.println("WiFi connected");
-        Serial.println("  Client IP: " + WiFi.localIP().toString());
       }
-      connectToServer();
     } else if (millis() - wifiConnectStart > wifiConnectTimeout) {
       wifiConnecting = false;
+      if (wifiFailureCount < SECURITY_MAX_INVALID_ATTEMPTS) {
+        wifiFailureCount++;
+      }
+
+      if (wifiFailureCount >= SECURITY_MAX_INVALID_ATTEMPTS) {
+        WiFi.disconnect(true, false);
+        wifiFailureCount = 0;
+        lastWiFiAttempt = millis();
+      }
+      return;
     }
+  }
+
+  if (wifiConnected && !wasWifiConnected) {
+    lastConnectAttempt = 0;
   }
 
   if (!tcpConnected && wifiConnected) {
     if (millis() - lastConnectAttempt > reconnectionInterval) {
       connectToServer();
       lastConnectAttempt = millis();
+      if (tcpConnected) {
+        tcpFailureCount = 0;
+      } else {
+        if (tcpFailureCount < SECURITY_MAX_INVALID_ATTEMPTS) {
+          tcpFailureCount++;
+        }
+
+        if (tcpFailureCount >= SECURITY_MAX_INVALID_ATTEMPTS) {
+          WiFi.disconnect(false, false);
+          wifiConnected = false;
+          tcpFailureCount = 0;
+        }
+      }
     }
   }
 
@@ -154,22 +289,9 @@ void runClientMode() {
     uint8_t buf[256];
     size_t readBytes = tcpClient.read(buf, toRead);
 
-    // 使用DMA发送
-    uart_write_bytes(UART_NUM_2, (const char *)buf, readBytes);
-    
-    // 记录接收的日志
-    if (logToSD && sdCardReady) {
-      for (size_t j = 0; j < readBytes; j++) {
-        char c = buf[j];
-        if (c == '\n') {
-          if (tcpLineBuffer.length() > 1) {
-            enqueueSDLog(tcpLineBuffer, client_id, false);
-          }
-          tcpLineBuffer = "";
-        } else if (c != '\r') {
-          tcpLineBuffer += c;
-        }
-      }
+    if (!processClientIngress(buf, readBytes) && isSecuritySourceBlocked(SECURITY_SOURCE_TCP_CLIENT, -1)) {
+      tcpClient.stop();
+      tcpConnected = false;
     }
   }
 
@@ -178,6 +300,8 @@ void runClientMode() {
       Serial.println("TCP disconnected");
     }
     tcpClient.stop();
+    clientTcpFrameBuffer = "";
+    clearSecurityState(clientTcpSecurityState);
     tcpConnected = false;
   }
 }
@@ -203,11 +327,9 @@ void initServerMode() {
     wifiConnected = true;
     if (debugMode) {
       Serial.println("WiFi AP started");
-      Serial.println("  AP SSID: " + String(ap_ssid));
-      Serial.println("  AP IP: " + WiFi.softAPIP().toString());
     }
     if (logToSD && sdCardReady) {
-      saveServerSystemLog("WiFi AP started - SSID: " + String(ap_ssid) + ", IP: " + WiFi.softAPIP().toString());
+      saveServerSystemLog("WiFi AP started - protected profile active");
     }
   } else {
     wifiConnected = false;
@@ -240,6 +362,28 @@ void initServerMode() {
 }
 
 void runServerMode() {
+  static unsigned long lastServerRecoveryAttempt = 0;
+  static uint8_t serverRecoveryFailures = 0;
+
+  if (!isServerAccessPointHealthy()) {
+    wifiConnected = false;
+    if (millis() - lastServerRecoveryAttempt >= 10000UL) {
+      lastServerRecoveryAttempt = millis();
+      if (serverRecoveryFailures < SECURITY_MAX_INVALID_ATTEMPTS) {
+        serverRecoveryFailures++;
+      }
+
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_OFF);
+      delay(100);
+      initServerMode();
+    }
+    return;
+  }
+
+  wifiConnected = true;
+  serverRecoveryFailures = 0;
+
   WiFiClient newClient = tcpServer.available();
   if (newClient) {
     IPAddress newIP = newClient.remoteIP();
@@ -263,24 +407,24 @@ void runServerMode() {
       clientSerialData[replaceSlot] = "// Reconnected\n";
       clientSerialData[replaceSlot].reserve(2200);
       clientLineBuffer[replaceSlot].reserve(512);
-      serverClients[replaceSlot].println("Welcome back to ESP32 UART Server");
+      sendFramedPayloadToClient(serverClients[replaceSlot], "SERVER:WELCOME_BACK");
       if (logToSD && sdCardReady) {
-        saveServerSystemLog("Client reconnected: " + newIP.toString());
+        saveServerSystemLog("Client reconnected: " + maskIpAddress(newIP));
       }
     } else if (freeSlot >= 0) {
       serverClients[freeSlot] = newClient;
       clientSerialData[freeSlot] = "// Serial data log\n";
       clientSerialData[freeSlot].reserve(2200);
       clientLineBuffer[freeSlot].reserve(512);
-      serverClients[freeSlot].println("Welcome to ESP32 UART Server");
+      sendFramedPayloadToClient(serverClients[freeSlot], "SERVER:WELCOME");
       if (logToSD && sdCardReady) {
-        saveServerSystemLog("New client connected: " + newIP.toString());
+        saveServerSystemLog("New client connected: " + maskIpAddress(newIP));
       }
     } else {
-      newClient.println("Server client limit reached");
+      sendFramedPayloadToClient(newClient, "SERVER:BUSY");
       newClient.stop();
       if (logToSD && sdCardReady) {
-        saveServerSystemLog("Client connection rejected: server limit reached - " + newIP.toString());
+        saveServerSystemLog("Client connection rejected: server limit reached - " + maskIpAddress(newIP));
       }
     }
   }
@@ -293,44 +437,14 @@ void runServerMode() {
         uint8_t buf[256];
         size_t readBytes = serverClients[i].read(buf, toRead);
 
-        // 写入网页串口显示缓冲区（全局）
-        appendToSerialBuffer((char*)buf, readBytes);
-        
-        // 写入客户端专属缓冲区（用于客户端详情页）
-        for (size_t j = 0; j < readBytes; j++) {
-          if (buf[j] != '\r') {
-            clientSerialData[i] += (char)buf[j];
-          }
-        }
-        
-        // 只有选中客户端时才透传到UART2和调试串口
-        if (selectedClientIndex >= 0 && selectedClientIndex == i) {
-          Serial.write((char*)buf, readBytes);
-          uart_write_bytes(UART_NUM_2, (const char *)buf, readBytes);
-        }
-
-        // 记录日志到SD卡
-        for (size_t j = 0; j < readBytes; j++) {
-          char c = buf[j];
-          if (c == '\n') {
-            clientLineBuffer[i] += '\n';
-            if (clientLineBuffer[i].length() > 1) {
-              if (logToSD && sdCardReady) {
-                String clientId = serverClients[i].remoteIP().toString();
-                enqueueSDLog(clientLineBuffer[i], clientId, true);
-              }
-            }
-            clientLineBuffer[i] = "";
-          } else if (c != '\r') {
-            clientLineBuffer[i] += c;
-          }
-        }
-
-        if (clientSerialData[i].length() > 2000) {
-          clientSerialData[i] = clientSerialData[i].substring(clientSerialData[i].length() - 1500);
-        }
-        if (clientLineBuffer[i].length() > 500) {
+        if (!processServerIngress(i, buf, readBytes) && isSecuritySourceBlocked(SECURITY_SOURCE_TCP_SERVER, i)) {
+          IPAddress blockedIp = serverClients[i].remoteIP();
+          serverClients[i].stop();
           clientLineBuffer[i] = "";
+          clientSerialData[i] = "// Blocked by security policy\n";
+          if (logToSD && sdCardReady) {
+            saveServerSystemLog("Client blocked due to invalid frames: " + maskIpAddress(blockedIp));
+          }
         }
       }
     } else if (serverClients[i]) {
@@ -338,7 +452,7 @@ void runServerMode() {
       serverClients[i].stop();
       clientLineBuffer[i] = "";
       if (logToSD && sdCardReady) {
-        saveServerSystemLog("Client disconnected: " + clientIP.toString());
+        saveServerSystemLog("Client disconnected: " + maskIpAddress(clientIP));
       }
     }
   }
