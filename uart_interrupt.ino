@@ -215,27 +215,52 @@ void flushTCPBuffer() {
   portEXIT_CRITICAL(&tcpSendBufferMux);
 
   if (localLen == 0) return;
-  
-  if (currentMode == MODE_SERVER) {
-    if (selectedClientIndex >= 0 && selectedClientIndex < MAX_CLIENTS) {
-      if (serverClients[selectedClientIndex] && serverClients[selectedClientIndex].connected()) {
-        serverClients[selectedClientIndex].write(localBuffer, localLen);
+
+  String payload = "";
+  payload.reserve(SECURITY_MAX_TRANSPARENT_PAYLOAD);
+
+  auto sendPayloadChunk = [&](const String &chunk) {
+    if (chunk.length() == 0) {
+      return;
+    }
+
+    if (currentMode == MODE_SERVER) {
+      if (selectedClientIndex >= 0 && selectedClientIndex < MAX_CLIENTS) {
+        if (serverClients[selectedClientIndex] && serverClients[selectedClientIndex].connected()) {
+          sendFramedPayloadToClient(serverClients[selectedClientIndex], chunk);
+        } else {
+          selectedClientIndex = -1;
+        }
       } else {
-        selectedClientIndex = -1;
-      }
-    } else {
-      for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (serverClients[i] && serverClients[i].connected()) {
-          serverClients[i].write(localBuffer, localLen);
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+          if (serverClients[i] && serverClients[i].connected()) {
+            sendFramedPayloadToClient(serverClients[i], chunk);
+          }
         }
       }
+    } else if (currentMode == MODE_CLIENT && tcpConnected) {
+      if (!sendFramedPayloadToClient(tcpClient, chunk)) {
+        tcpConnected = false;
+      }
     }
-  } else if (currentMode == MODE_CLIENT && tcpConnected) {
-    int sent = tcpClient.write(localBuffer, localLen);
-    if (sent <= 0) {
-      tcpConnected = false;
+  };
+  
+  for (uint16_t i = 0; i < localLen; i++) {
+    char value = (char)localBuffer[i];
+    if (!isAllowedPayloadCharacter(value)) {
+      sendPayloadChunk(payload);
+      payload = "";
+      continue;
+    }
+
+    payload += value;
+    if (payload.length() >= SECURITY_MAX_TRANSPARENT_PAYLOAD) {
+      sendPayloadChunk(payload);
+      payload = "";
     }
   }
+
+  sendPayloadChunk(payload);
 }
 
 // 主循环调用（刷新TCP缓冲区）
@@ -265,7 +290,7 @@ void selectClient(int index) {
     Serial.println("Client selection cancelled, forwarding to all clients");
   } else {
     Serial.println("Selected client " + String(index) + " for transparent mode");
-    Serial.println("  Client IP: " + serverClients[index].remoteIP().toString());
+    Serial.println("  Client IP: " + maskIpAddress(serverClients[index].remoteIP()));
   }
 }
 
@@ -406,7 +431,7 @@ void listSelectableClients() {
   for (int i = 0; i < MAX_CLIENTS; i++) {
     if (serverClients[i] && serverClients[i].connected()) {
       String selected = (selectedClientIndex == i) ? " [Selected]" : "";
-      Serial.println("  " + String(i) + ": " + serverClients[i].remoteIP().toString() + selected);
+      Serial.println("  " + String(i) + ": " + maskIpAddress(serverClients[i].remoteIP()) + selected);
     }
   }
   
