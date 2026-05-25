@@ -64,11 +64,24 @@
 ## 文档导航
 
 - [文档中心](doc/README.md)
+- [硬件设计资料](doc/hardware/README.md)
 - [系统架构](doc/architecture/README.md)
 - [模块说明](doc/modules/README.md)
 - [配置与接口](doc/configuration/README.md)
 - [构建、烧录与运维](doc/operation/README.md)
 - [安全设计](doc/security/README.md)
+
+## 硬件设计资料
+
+项目文档已补充硬件视图整理，包含原理图、PCB 图、3D 仿真图与实物图对应说明，适合在阅读代码、查看引脚定义和做结构装配时交叉对照。
+
+| 3D 仿真图 | 实物图 |
+| --- | --- |
+| ![3D 仿真图](doc/picture/3D.png) | ![实物图](doc/picture/phy.jpg) |
+
+- [硬件设计资料总览](doc/hardware/README.md)
+- 重点包含 3D 仿真图与实物图的接口分布、按键位置、SD 卡槽与 UART 接口对照
+- 原理图与 PCB 正反面图已同步收录在硬件设计资料页
 
 ## 仓库结构
 
@@ -85,7 +98,7 @@
 |-- compile.ps1                   # Arduino CLI 编译脚本
 |-- build_and_flash.ps1           # 编译后烧录脚本
 |-- PCB/                          # PCB 设计和 PDF 导出文件
-`-- doc/                          # 详细工程文档
+`-- doc/                          # 详细工程文档（含硬件设计资料）
 ```
 
 ## 硬件摘要
@@ -102,7 +115,7 @@
 | 电池 ADC | GPIO1 |
 | 电源控制 / 复位控制 | GPIO5 / GPIO4 |
 
-更完整的接线与配置说明见 [配置与接口](doc/configuration/README.md) 和 [PCB 资料](PCB/dual-mode-uart-enhanced.pdf)。
+更完整的接线与配置说明见 [配置与接口](doc/configuration/README.md)、[硬件设计资料](doc/hardware/README.md) 和 [PCB 资料](PCB/dual-mode-uart-enhanced.pdf)。
 
 ## 当前实现边界
 
