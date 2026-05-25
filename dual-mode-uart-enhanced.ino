@@ -172,6 +172,7 @@ enum LEDState {
   LED_SOLID_YELLOW,    // 常亮黄 - 部分连接
   LED_SOLID_RED,       // 常亮红 - 未连接
   LED_SINGLE_FLASH,    // 单次短闪 - 收到指令
+  LED_MULTI_FLASH,     // 多次短闪 - 用于非阻塞的多次闪烁通知
   LED_SD_ERROR,        // SD卡错误闪烁
   LED_LOW_BATTERY      // 低电量闪烁
 };
@@ -341,6 +342,7 @@ void handleCommand(String command);
 void setLED(CRGB color);
 void updateLEDStatus();
 void flashLED();
+void requestMultiFlash(CRGB color, int times, unsigned long interval);
 String getDateString();
 void printHelp();
 

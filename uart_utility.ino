@@ -2,6 +2,29 @@
 
 #define UART_BUFFER_SIZE 1024
 
+// ==================== LED Multi-Flash (非阻塞) ====================
+bool multiFlashActive = false;
+CRGB multiFlashColor = CRGB(0, 0, 0);
+int multiFlashTimes = 0;           // 总闪烁次数
+int multiFlashCount = 0;           // 已完成闪烁次数
+unsigned long multiFlashInterval = 0; // on/off 切换间隔(ms)
+unsigned long multiFlashLastToggle = 0;
+bool multiFlashOnState = false;
+
+void requestMultiFlash(CRGB color, int times, unsigned long interval) {
+  if (times <= 0) return;
+  previousLEDState = currentLEDState;
+  currentLEDState = LED_MULTI_FLASH;
+  multiFlashActive = true;
+  multiFlashColor = color;
+  multiFlashTimes = times;
+  multiFlashCount = 0;
+  multiFlashInterval = interval;
+  multiFlashLastToggle = millis();
+  multiFlashOnState = true;
+  setLED(color);
+}
+
 bool isATPlusCandidate(const String &buffer) {
   if (buffer.length() > 3) {
     return false;
@@ -279,9 +302,40 @@ void setLED(CRGB color) {
 }
 
 void updateLEDStatus() {
+  // 如果有多次闪烁请求优先处理（非阻塞）
+  if (multiFlashActive && currentLEDState == LED_MULTI_FLASH) {
+    if (millis() - multiFlashLastToggle >= multiFlashInterval) {
+      if (multiFlashOnState) {
+        setLED(CRGB(0, 0, 0));
+        multiFlashOnState = false;
+        multiFlashCount++;
+      } else {
+        setLED(multiFlashColor);
+        multiFlashOnState = true;
+      }
+      multiFlashLastToggle = millis();
+    }
+    if (multiFlashCount >= multiFlashTimes) {
+      multiFlashActive = false;
+      currentLEDState = previousLEDState;
+      lastLEDToggle = millis();
+    }
+    return;
+  }
+
+  // Handle one-shot single flash (非阻塞)，优先于常规状态
+  if (currentLEDState == LED_SINGLE_FLASH) {
+    if (millis() - lastLEDToggle < 100) {
+      setLED(CRGB(255, 255, 255));
+      return;
+    }
+    currentLEDState = previousLEDState;
+    lastLEDToggle = millis();
+  }
+
   // Update LED based on system status
   LEDState newState = LED_OFF;
-  
+
   // Config mode takes priority
   if (inConfigMode) {
     newState = LED_SOLID_YELLOW;
@@ -304,13 +358,13 @@ void updateLEDStatus() {
       newState = LED_SLOW_BLINK;
     }
   }
-  
+
   if (newState != currentLEDState) {
     currentLEDState = newState;
     lastLEDToggle = millis();
     breatheValue = 0;
   }
-  
+
   switch (currentLEDState) {
     case LED_OFF:
       setLED(CRGB(0, 0, 0));
@@ -325,7 +379,7 @@ void updateLEDStatus() {
     case LED_SLOW_BLINK:
       if (millis() - lastLEDToggle > 1000) {
         ledBlinkState = !ledBlinkState;
-        setLED(ledBlinkState ? CRGB(0, 255, 0) : CRGB(0, 0, 0));
+        setLED(ledBlinkState ? CRGB(0, 255, 255) : CRGB(0, 0, 0));
         lastLEDToggle = millis();
       }
       break;
@@ -333,7 +387,8 @@ void updateLEDStatus() {
       if (millis() - lastLEDToggle > 20) {
         breatheValue += 5;
         if (breatheValue > 255) breatheValue = 0;
-        setLED(CRGB(0, breatheValue, 0));
+        // 低功耗呼吸为蓝色
+        setLED(CRGB(0, 0, breatheValue));
         lastLEDToggle = millis();
       }
       break;
@@ -347,15 +402,12 @@ void updateLEDStatus() {
       setLED(CRGB(255, 0, 0));
       break;
     case LED_SINGLE_FLASH:
-      setLED(CRGB(255, 255, 255));
-      delay(100);
-      setLED(CRGB(0, 0, 0));
-      currentLEDState = previousLEDState;
+      // handled above as non-blocking
       break;
     case LED_SD_ERROR:
       if (millis() - lastLEDToggle > 300) {
         ledBlinkState = !ledBlinkState;
-        setLED(ledBlinkState ? CRGB(255, 0, 0) : CRGB(0, 0, 0));
+        setLED(ledBlinkState ? CRGB(255, 255, 255) : CRGB(0, 0, 0));
         lastLEDToggle = millis();
       }
       break;
@@ -365,6 +417,8 @@ void updateLEDStatus() {
         setLED(ledBlinkState ? CRGB(255, 0, 0) : CRGB(0, 0, 0));
         lastLEDToggle = millis();
       }
+      break;
+    default:
       break;
   }
 }
