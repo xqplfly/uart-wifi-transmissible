@@ -278,13 +278,8 @@ void switchMode() {
   Serial.println("New mode: " + String(currentMode == MODE_CLIENT ? "Client" : "Server"));
   Serial.println("System will restart...");
   
-  // LED flash notification
-  for (int i = 0; i < 5; i++) {
-    setLED(CRGB(255, 255, 255));
-    delay(100);
-    setLED(CRGB(0, 0, 0));
-    delay(100);
-  }
+  // LED flash notification (非阻塞多次闪烁)
+  requestMultiFlash(CRGB(255, 255, 255), 5, 100);
   
   delay(500);
   ESP.restart();
@@ -302,13 +297,8 @@ void resetToDefault() {
   Serial.println("\n*** Reset to Default!");
   Serial.println("System will restart...");
   
-  // LED flash notification
-  for (int i = 0; i < 10; i++) {
-    setLED(CRGB(255, 0, 0));
-    delay(100);
-    setLED(CRGB(0, 0, 0));
-    delay(100);
-  }
+  // LED flash notification (非阻塞多次闪烁)
+  requestMultiFlash(CRGB(255, 0, 0), 10, 100);
   
   delay(500);
   ESP.restart();

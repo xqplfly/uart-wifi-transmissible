@@ -45,12 +45,8 @@ void checkBattery() {
       if (debugMode) {
         Serial.println("! Low battery warning! Voltage: " + String(batteryVoltage) + "V");
       }
-      for (int i = 0; i < 5; i++) {
-        setLED(CRGB(255, 0, 0));
-        delay(200);
-        setLED(CRGB(0, 0, 0));
-        delay(200);
-      }
+      // 非阻塞多次闪烁提示低电量
+      requestMultiFlash(CRGB(255, 0, 0), 5, 200);
     }
   } else {
     lowBattery = false;
