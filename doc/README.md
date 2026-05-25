@@ -1,19 +1,21 @@
 # 文档中心
 
-本目录提供 dual-mode-uart-enhanced 的详细工程文档。根目录 [README](../README.md) 用于项目首页展示，这里则按“架构、模块、配置、运维、安全”拆分说明，便于团队协作和二次开发。
+本目录提供 dual-mode-uart-enhanced 的详细工程文档。根目录 [README](../README.md) 用于项目首页展示，这里则按“硬件、架构、模块、配置、运维、安全”拆分说明，便于团队协作和二次开发。
 
 ## 建议阅读顺序
 
 1. [系统架构](architecture/README.md)
-2. [模块说明](modules/README.md)
-3. [配置与接口](configuration/README.md)
-4. [构建、烧录与运维](operation/README.md)
-5. [安全设计](security/README.md)
+2. [硬件设计资料](hardware/README.md)
+3. [模块说明](modules/README.md)
+4. [配置与接口](configuration/README.md)
+5. [构建、烧录与运维](operation/README.md)
+6. [安全设计](security/README.md)
 
 ## 文档索引
 
 | 文档 | 适用对象 | 主要内容 |
 | --- | --- | --- |
+| [硬件设计资料](hardware/README.md) | 硬件工程师、固件维护者、装配调试人员 | 原理图解读、PCB 分区、3D 仿真观察点、实物板接口对照 |
 | [系统架构](architecture/README.md) | 新接手开发者、架构设计者 | 启动流程、主循环、数据流、任务模型 |
 | [模块说明](modules/README.md) | 开发者 | 每个 .ino/.h 文件的职责、关键函数、扩展位置 |
 | [配置与接口](configuration/README.md) | 调试工程师、固件维护者 | 引脚表、EEPROM 布局、AT 指令、Web 配置入口 |
@@ -23,7 +25,9 @@
 ## 相关资源
 
 - [项目首页](../README.md)
+- [硬件设计资料](hardware/README.md)
 - [PCB PDF](../PCB/dual-mode-uart-enhanced.pdf)
+- [PCB 原始工程](../PCB/dual-mode-uart-enhanced_v0.8.dsn)
 - [Arduino CLI 编译脚本](../compile.ps1)
 - [一键烧录脚本](../build_and_flash.ps1)
 
