@@ -117,12 +117,6 @@
 
 更完整的接线与配置说明见 [配置与接口](doc/configuration/README.md)、[硬件设计资料](doc/hardware/README.md) 和 [PCB 资料](PCB/dual-mode-uart-enhanced.pdf)。
 
-## 当前实现边界
-
-- 低功耗功能在代码中保留结构，但当前默认禁用。
-- 透传安全帧实现的是语法和输入约束，不等同于加密认证链路。
-- 客户端默认目标服务器 IP 仍为固定常量 192.168.1.1，适合与服务器模式配套使用。
-
 ## 参与贡献
 
 欢迎通过 Issue 或 Pull Request 提交问题、修复和改进建议。建议先阅读 [系统架构](doc/architecture/README.md) 与 [模块说明](doc/modules/README.md)，再开始修改代码。
