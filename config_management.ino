@@ -1,4 +1,167 @@
 ﻿// ==================== Configuration Management ====================
+bool isSafeConfigCharacter(char value) {
+  return value >= 0x20 && value <= 0x7E && value != '<' && value != '>' && value != '"' && value != '\\';
+}
+
+bool copyStringToBuffer(const String &value, char *target, size_t targetSize) {
+  if (target == NULL || targetSize == 0 || value.length() >= targetSize) {
+    return false;
+  }
+
+  memset(target, 0, targetSize);
+  for (unsigned int i = 0; i < value.length(); i++) {
+    target[i] = value[i];
+  }
+  target[value.length()] = '\0';
+  return true;
+}
+
+void writeEEPROMString(int address, const char *value, size_t capacity) {
+  for (size_t i = 0; i < capacity; i++) {
+    char nextValue = 0;
+    if (value != NULL && value[i] != '\0') {
+      nextValue = value[i];
+    }
+    EEPROM.write(address + i, nextValue);
+  }
+}
+
+void readEEPROMString(int address, char *buffer, size_t capacity) {
+  if (buffer == NULL || capacity == 0) {
+    return;
+  }
+
+  memset(buffer, 0, capacity);
+  for (size_t i = 0; i < capacity - 1; i++) {
+    uint8_t rawValue = EEPROM.read(address + i);
+    if (rawValue == 0 || rawValue == 0xFF) {
+      break;
+    }
+
+    char value = (char)rawValue;
+    if (!isSafeConfigCharacter(value) && value != ' ') {
+      buffer[0] = '\0';
+      return;
+    }
+
+    buffer[i] = value;
+  }
+  buffer[capacity - 1] = '\0';
+}
+
+String buildDeviceToken() {
+  uint32_t chipId = 0;
+  for (int i = 0; i < 17; i += 8) {
+    chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xFF) << i;
+  }
+
+  String token = String(chipId, HEX);
+  token.toUpperCase();
+  return token;
+}
+
+void applyDefaultClientId() {
+  client_id = "ESP32_CLIENT_" + buildDeviceToken();
+}
+
+void buildDefaultWifiField(const String &prefix, char *target, size_t targetSize) {
+  String value = prefix + buildDeviceToken();
+  copyStringToBuffer(value, target, targetSize);
+}
+
+void buildDefaultWifiPassword(char *target, size_t targetSize) {
+  String value = "ESP32#" + buildDeviceToken() + "!";
+  copyStringToBuffer(value, target, targetSize);
+}
+
+bool validateClientIdValue(const String &value) {
+  if (value.length() == 0 || value.length() > CLIENT_ID_MAX_LEN) {
+    return false;
+  }
+
+  for (unsigned int i = 0; i < value.length(); i++) {
+    char current = value[i];
+    bool isAllowed = (current >= '0' && current <= '9') ||
+                     (current >= 'A' && current <= 'Z') ||
+                     (current >= 'a' && current <= 'z') ||
+                     current == '_' || current == '-';
+    if (!isAllowed) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool validateWiFiSsidValue(const String &value) {
+  if (value.length() == 0 || value.length() > WIFI_SSID_MAX_LEN) {
+    return false;
+  }
+
+  for (unsigned int i = 0; i < value.length(); i++) {
+    if (!isSafeConfigCharacter(value[i]) && value[i] != ' ') {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool validateWiFiPasswordValue(const String &value, bool allowEmpty) {
+  if (value.length() == 0) {
+    return allowEmpty;
+  }
+
+  if (value.length() < 8 || value.length() > (WIFI_PASSWORD_MAX_LEN - 1)) {
+    return false;
+  }
+
+  for (unsigned int i = 0; i < value.length(); i++) {
+    if (!isSafeConfigCharacter(value[i]) && value[i] != ' ') {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool hasConfiguredClientWiFi() {
+  return validateWiFiSsidValue(String(client_wifi_ssid)) &&
+         validateWiFiPasswordValue(String(client_wifi_password), false);
+}
+
+String maskSensitiveValue(const char *value) {
+  if (value == NULL || value[0] == '\0') {
+    return "未配置";
+  }
+
+  size_t length = strlen(value);
+  if (length <= 2) {
+    return "**";
+  }
+
+  String masked = String(value[0]) + String(value[1]);
+  for (size_t i = 2; i < length; i++) {
+    masked += '*';
+  }
+  return masked;
+}
+
+String maskIpAddress(IPAddress address) {
+  return String(address[0]) + "." + String(address[1]) + ".*.*";
+}
+
+void applyDefaultWiFiConfig() {
+  buildDefaultWifiField("ESP32_UART_", ap_ssid, sizeof(ap_ssid));
+  buildDefaultWifiPassword(ap_password, sizeof(ap_password));
+
+  copyStringToBuffer(String(ap_ssid), client_wifi_ssid, sizeof(client_wifi_ssid));
+  copyStringToBuffer(String(ap_password), client_wifi_password, sizeof(client_wifi_password));
+
+  buildDefaultWifiField("ESP32_CFG_", wifimanager_ssid, sizeof(wifimanager_ssid));
+  copyStringToBuffer(String(ap_password), wifimanager_password, sizeof(wifimanager_password));
+}
+
 void loadConfigFromEEPROM() {
   // Load mode
   int savedMode = EEPROM.read(EEPROM_MODE_ADDR);
@@ -28,6 +191,30 @@ void loadConfigFromEEPROM() {
     idBuffer[i] = EEPROM.read(EEPROM_CLIENT_ID_ADDR + i);
     if (idBuffer[i] == 0 || idBuffer[i] == 255) break;
   }
+  if (validateClientIdValue(String(idBuffer))) {
+    client_id = String(idBuffer);
+  } else {
+    applyDefaultClientId();
+  }
+
+  readEEPROMString(EEPROM_AP_SSID_ADDR, ap_ssid, sizeof(ap_ssid));
+  readEEPROMString(EEPROM_AP_PASS_ADDR, ap_password, sizeof(ap_password));
+  readEEPROMString(EEPROM_STA_SSID_ADDR, client_wifi_ssid, sizeof(client_wifi_ssid));
+  readEEPROMString(EEPROM_STA_PASS_ADDR, client_wifi_password, sizeof(client_wifi_password));
+  readEEPROMString(EEPROM_PORTAL_SSID_ADDR, wifimanager_ssid, sizeof(wifimanager_ssid));
+  readEEPROMString(EEPROM_PORTAL_PASS_ADDR, wifimanager_password, sizeof(wifimanager_password));
+
+  bool wifiConfigValid = EEPROM.read(EEPROM_WIFI_MAGIC_ADDR) == EEPROM_WIFI_CONFIG_MAGIC &&
+                         validateWiFiSsidValue(String(ap_ssid)) &&
+                         validateWiFiPasswordValue(String(ap_password), false) &&
+                         validateWiFiSsidValue(String(client_wifi_ssid)) &&
+                         validateWiFiPasswordValue(String(client_wifi_password), false) &&
+                         validateWiFiSsidValue(String(wifimanager_ssid)) &&
+                         validateWiFiPasswordValue(String(wifimanager_password), false);
+
+  if (!wifiConfigValid) {
+    applyDefaultWiFiConfig();
+  }
   
   // Load log timestamp setting
   logWithTimestamp = (EEPROM.read(EEPROM_LOGTIME_ADDR) == 1);
@@ -35,6 +222,10 @@ void loadConfigFromEEPROM() {
   int savedDebugMode = EEPROM.read(EEPROM_DEBUGMODE_ADDR);
   if (savedDebugMode == 0 || savedDebugMode == 1) {
     debugMode = (savedDebugMode == 1);
+  }
+
+  if (!wifiConfigValid) {
+    saveConfigToEEPROM();
   }
   
   if (debugMode) {
@@ -59,6 +250,14 @@ void saveConfigToEEPROM() {
     EEPROM.write(EEPROM_CLIENT_ID_ADDR + i, client_id[i]);
   }
   EEPROM.write(EEPROM_CLIENT_ID_ADDR + client_id.length(), 0);
+
+  EEPROM.write(EEPROM_WIFI_MAGIC_ADDR, EEPROM_WIFI_CONFIG_MAGIC);
+  writeEEPROMString(EEPROM_AP_SSID_ADDR, ap_ssid, sizeof(ap_ssid));
+  writeEEPROMString(EEPROM_AP_PASS_ADDR, ap_password, sizeof(ap_password));
+  writeEEPROMString(EEPROM_STA_SSID_ADDR, client_wifi_ssid, sizeof(client_wifi_ssid));
+  writeEEPROMString(EEPROM_STA_PASS_ADDR, client_wifi_password, sizeof(client_wifi_password));
+  writeEEPROMString(EEPROM_PORTAL_SSID_ADDR, wifimanager_ssid, sizeof(wifimanager_ssid));
+  writeEEPROMString(EEPROM_PORTAL_PASS_ADDR, wifimanager_password, sizeof(wifimanager_password));
   
   // Save log timestamp setting
   EEPROM.write(EEPROM_LOGTIME_ADDR, logWithTimestamp ? 1 : 0);
@@ -94,6 +293,9 @@ void switchMode() {
 void resetToDefault() {
   currentMode = MODE_CLIENT;
   uart2BaudRate = DEFAULT_UART2_BAUD;
+  uart1BaudRate = DEFAULT_UART1_BAUD;
+  applyDefaultClientId();
+  applyDefaultWiFiConfig();
   saveModeToEEPROM();
   saveConfigToEEPROM();
   

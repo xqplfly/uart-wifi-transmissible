@@ -3,19 +3,18 @@
 void initWebServer() {
   if (webServerEnabled && (wifiConnected || currentMode == MODE_SERVER)) {
     webServer.begin();
-    String ipStr = (currentMode == MODE_SERVER) ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
     if (debugMode) {
       Serial.println("✓ Web服务器启动成功");
-      Serial.println("  访问地址: http://" + ipStr);
-      Serial.println("  日志查看: http://" + ipStr + "/logs");
-      Serial.println("  系统状态: http://" + ipStr + "/status");
-      Serial.println("  串口监视器: http://" + ipStr + "/serial");
+      Serial.println("  管理页面已就绪");
     }
   }
 }
 
 void handleWebServer() {
   if (!webServerEnabled) return;
+
+  const size_t maxHeaderLength = 1024;
+  const size_t maxBodyLength = 1536;
   
   WiFiClient client = webServer.available();
   if (!client) return;
@@ -28,6 +27,13 @@ void handleWebServer() {
   while (client.connected() && !headersComplete && (millis() - startTime < 500)) {
     if (client.available()) {
       char c = client.read();
+      if (request.length() >= maxHeaderLength) {
+        client.println("HTTP/1.1 413 Payload Too Large");
+        client.println("Connection: close");
+        client.println();
+        client.stop();
+        return;
+      }
       request += c;
       
       if (request.length() >= 4 && request.substring(request.length() - 4) == "\r\n\r\n") {
@@ -49,6 +55,14 @@ void handleWebServer() {
       contentLength = lenStr.toInt();
     }
   }
+
+  if (contentLength > (int)maxBodyLength) {
+    client.println("HTTP/1.1 413 Payload Too Large");
+    client.println("Connection: close");
+    client.println();
+    client.stop();
+    return;
+  }
   
   // 如果是POST请求，继续读取body
   String postBody = "";
@@ -57,6 +71,13 @@ void handleWebServer() {
     while (client.connected() && (millis() - startTime < 500)) {
       if (client.available()) {
         char c = client.read();
+        if (postBody.length() >= maxBodyLength) {
+          client.println("HTTP/1.1 413 Payload Too Large");
+          client.println("Connection: close");
+          client.println();
+          client.stop();
+          return;
+        }
         postBody += c;
         if (postBody.length() >= contentLength) break;
       }
@@ -458,12 +479,12 @@ void handleStatusPage(WiFiClient client) {
   html += "<strong>状态:</strong> " + String(wifiConnected ? "已连接" : "未连接") + "<br>";
   if (wifiConnected) {
     if (currentMode == MODE_SERVER) {
-      html += "<strong>AP SSID:</strong> " + String(ap_ssid) + "<br>";
-      html += "<strong>AP IP:</strong> " + WiFi.softAPIP().toString() + "<br>";
+      html += "<strong>AP SSID:</strong> " + maskSensitiveValue(ap_ssid) + "<br>";
+      html += "<strong>AP 地址:</strong> " + maskIpAddress(WiFi.softAPIP()) + "<br>";
       html += "<strong>连接设备数:</strong> " + String(WiFi.softAPgetStationNum()) + "<br>";
     } else {
-      html += "<strong>SSID:</strong> " + String(client_wifi_ssid) + "<br>";
-      html += "<strong>IP地址:</strong> " + WiFi.localIP().toString() + "<br>";
+      html += "<strong>SSID:</strong> " + maskSensitiveValue(client_wifi_ssid) + "<br>";
+      html += "<strong>IP地址:</strong> " + maskIpAddress(WiFi.localIP()) + "<br>";
       html += "<strong>信号强度:</strong> " + String(WiFi.RSSI()) + " dBm<br>";
     }
   }
@@ -506,7 +527,7 @@ void handleStatusPage(WiFiClient client) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
       if (serverClients[i] && serverClients[i].connected()) {
         html += "<a href='/client?client_id=" + String(i) + "' style='display:inline-block;padding:8px 12px;background:#4CAF50;color:white;text-decoration:none;border-radius:4px;margin:5px 0;'>";
-        html += "客户端 " + String(i) + ": " + serverClients[i].remoteIP().toString() + " → 点击查看数据</a><br>";
+        html += "客户端 " + String(i) + ": " + maskIpAddress(serverClients[i].remoteIP()) + " → 点击查看数据</a><br>";
       }
     }
     if (clientCount == 0) {
@@ -585,7 +606,7 @@ void handleClientPage(WiFiClient client, String request) {
   html += "</style></head><body>";
   html += "<div class='header'>";
   html += "<h1>🖥️ 客户端 " + String(clientIdx) + " - 串口数据</h1>";
-  html += "<div class='header-info'>IP: " + serverClients[clientIdx].remoteIP().toString() + " | 波特率: " + String(uart2BaudRate) + "</div>";
+  html += "<div class='header-info'>终端: " + maskIpAddress(serverClients[clientIdx].remoteIP()) + " | 波特率: " + String(uart2BaudRate) + "</div>";
   html += "</div>";
   html += "<div class='serial-container'>";
   String initData = filterAnsiEscape(clientSerialData[clientIdx]);
@@ -674,7 +695,15 @@ void handleClientSend(WiFiClient client, String request) {
   
   if (clientIdx >= 0 && clientIdx < MAX_CLIENTS && serverClients[clientIdx] && serverClients[clientIdx].connected()) {
     if (data.length() > 0) {
-      serverClients[clientIdx].write(data.c_str(), data.length());
+      String payload = "";
+      String frame = buildSecureFrame(data);
+      String errorReason = "";
+
+      webFrameBuffer = "";
+      if (frame.length() > 0 && appendIngressChunk(SECURITY_SOURCE_WEB, -1, (const uint8_t *)frame.c_str(), frame.length(), errorReason) &&
+          getValidatedPayload(SECURITY_SOURCE_WEB, -1, payload, errorReason)) {
+        sendFramedPayloadToClient(serverClients[clientIdx], payload);
+      }
     }
   }
   
@@ -707,6 +736,7 @@ void handleConfigPage(WiFiClient client) {
   html += "<div class='container'>";
   html += "<h1>⚙️ 系统配置</h1>";
   html += "<form action='/saveconfig' method='post'>";
+  html += "<div class='form-group'><small style='color:#666;'>敏感配置不回显，留空表示保持当前值。</small></div>";
   
   // 运行模式
   html += "<div class='form-group'>";
@@ -721,6 +751,42 @@ void handleConfigPage(WiFiClient client) {
   html += "<div class='form-group'>";
   html += "<label for='client_id'>客户端ID</label>";
   html += "<input type='text' name='client_id' id='client_id' value='" + client_id + "'>";
+  html += "</div>";
+
+  html += "<div class='form-group'>";
+  html += "<label for='ap_ssid'>AP SSID</label>";
+  html += "<input type='text' name='ap_ssid' id='ap_ssid' maxlength='32' placeholder='留空保持当前配置'>";
+  html += "<small style='color:#888;display:block;margin-top:5px;'>当前: " + maskSensitiveValue(ap_ssid) + "</small>";
+  html += "</div>";
+
+  html += "<div class='form-group'>";
+  html += "<label for='ap_password'>AP 密码</label>";
+  html += "<input type='password' name='ap_password' id='ap_password' maxlength='63' placeholder='留空保持当前配置'>";
+  html += "<small style='color:#888;display:block;margin-top:5px;'>状态: " + String(strlen(ap_password) >= 8 ? "已配置" : "未配置") + "</small>";
+  html += "</div>";
+
+  html += "<div class='form-group'>";
+  html += "<label for='client_wifi_ssid'>客户端 WiFi SSID</label>";
+  html += "<input type='text' name='client_wifi_ssid' id='client_wifi_ssid' maxlength='32' placeholder='留空保持当前配置'>";
+  html += "<small style='color:#888;display:block;margin-top:5px;'>当前: " + maskSensitiveValue(client_wifi_ssid) + "</small>";
+  html += "</div>";
+
+  html += "<div class='form-group'>";
+  html += "<label for='client_wifi_password'>客户端 WiFi 密码</label>";
+  html += "<input type='password' name='client_wifi_password' id='client_wifi_password' maxlength='63' placeholder='留空保持当前配置'>";
+  html += "<small style='color:#888;display:block;margin-top:5px;'>状态: " + String(strlen(client_wifi_password) >= 8 ? "已配置" : "未配置") + "</small>";
+  html += "</div>";
+
+  html += "<div class='form-group'>";
+  html += "<label for='portal_ssid'>配网热点 SSID</label>";
+  html += "<input type='text' name='portal_ssid' id='portal_ssid' maxlength='32' placeholder='留空保持当前配置'>";
+  html += "<small style='color:#888;display:block;margin-top:5px;'>当前: " + maskSensitiveValue(wifimanager_ssid) + "</small>";
+  html += "</div>";
+
+  html += "<div class='form-group'>";
+  html += "<label for='portal_password'>配网热点密码</label>";
+  html += "<input type='password' name='portal_password' id='portal_password' maxlength='63' placeholder='留空保持当前配置'>";
+  html += "<small style='color:#888;display:block;margin-top:5px;'>状态: " + String(strlen(wifimanager_password) >= 8 ? "已配置" : "未配置") + "</small>";
   html += "</div>";
   
   // UART2波特率
@@ -768,38 +834,137 @@ void handleConfigPage(WiFiClient client) {
 
 void handleSaveConfig(WiFiClient client, String request) {
   String postData = request;
+  String validationError = "";
 
-  // 解析参数
-  int modeIndex = postData.indexOf("mode=") + 5;
-  int modeEnd = postData.indexOf("&", modeIndex);
-  int newMode = postData.substring(modeIndex, modeEnd).toInt();
-  
-  int clientIdIndex = postData.indexOf("client_id=") + 10;
-  int clientIdEnd = postData.indexOf("&", clientIdIndex);
-  String newClientId = postData.substring(clientIdIndex, clientIdEnd);
-  
-  int baudIndex = postData.indexOf("uart2_baud=") + 11;
-  int baudEnd = postData.indexOf("&", baudIndex);
-  int newBaud = postData.substring(baudIndex, baudEnd).toInt();
-  
-  int debugIndex = postData.indexOf("debug_mode=") + 11;
-  int debugEnd = postData.indexOf("&", debugIndex);
-  if (debugEnd == -1) debugEnd = postData.length();
-  bool newDebugMode = postData.substring(debugIndex, debugEnd).toInt() == 1;
-  
-  int tsIndex = postData.indexOf("log_timestamp=") + 14;
-  int tsEnd = postData.indexOf("&", tsIndex);
-  if (tsEnd == -1) tsEnd = postData.length();
-  bool newLogTimestamp = postData.substring(tsIndex, tsEnd).toInt() == 1;
-  
-  // 保存配置
+  String modeValue = getFormValue(postData, "mode");
+  int newMode = currentMode;
+  if (modeValue.length() > 0) {
+    newMode = modeValue.toInt();
+    if (newMode != MODE_CLIENT && newMode != MODE_SERVER) {
+      validationError = "运行模式无效";
+    }
+  }
+
+  String newClientId = getFormValue(postData, "client_id");
+  if (validationError.length() == 0 && !validateClientIdValue(newClientId)) {
+    validationError = "客户端ID仅允许字母、数字、下划线和短横线";
+  }
+
+  String baudValue = getFormValue(postData, "uart2_baud");
+  unsigned long newBaud = uart2BaudRate;
+  if (validationError.length() == 0 && baudValue.length() > 0) {
+    newBaud = baudValue.toInt();
+    if (newBaud < 9600 || newBaud > 921600) {
+      validationError = "UART2 波特率无效";
+    }
+  }
+
+  String debugValue = getFormValue(postData, "debug_mode");
+  bool newDebugMode = debugMode;
+  if (validationError.length() == 0 && debugValue.length() > 0) {
+    if (debugValue != "0" && debugValue != "1") {
+      validationError = "调试模式参数无效";
+    } else {
+      newDebugMode = debugValue == "1";
+    }
+  }
+
+  String logTimestampValue = getFormValue(postData, "log_timestamp");
+  bool newLogTimestamp = logWithTimestamp;
+  if (validationError.length() == 0 && logTimestampValue.length() > 0) {
+    if (logTimestampValue != "0" && logTimestampValue != "1") {
+      validationError = "日志时间戳参数无效";
+    } else {
+      newLogTimestamp = logTimestampValue == "1";
+    }
+  }
+
+  char nextApSsid[sizeof(ap_ssid)] = {0};
+  char nextApPassword[sizeof(ap_password)] = {0};
+  char nextClientSsid[sizeof(client_wifi_ssid)] = {0};
+  char nextClientPassword[sizeof(client_wifi_password)] = {0};
+  char nextPortalSsid[sizeof(wifimanager_ssid)] = {0};
+  char nextPortalPassword[sizeof(wifimanager_password)] = {0};
+
+  copyStringToBuffer(String(ap_ssid), nextApSsid, sizeof(nextApSsid));
+  copyStringToBuffer(String(ap_password), nextApPassword, sizeof(nextApPassword));
+  copyStringToBuffer(String(client_wifi_ssid), nextClientSsid, sizeof(nextClientSsid));
+  copyStringToBuffer(String(client_wifi_password), nextClientPassword, sizeof(nextClientPassword));
+  copyStringToBuffer(String(wifimanager_ssid), nextPortalSsid, sizeof(nextPortalSsid));
+  copyStringToBuffer(String(wifimanager_password), nextPortalPassword, sizeof(nextPortalPassword));
+
+  String apSsidValue = getFormValue(postData, "ap_ssid");
+  if (validationError.length() == 0 && apSsidValue.length() > 0) {
+    if (!validateWiFiSsidValue(apSsidValue) || !copyStringToBuffer(apSsidValue, nextApSsid, sizeof(nextApSsid))) {
+      validationError = "AP SSID 非法或过长";
+    }
+  }
+
+  String apPasswordValue = getFormValue(postData, "ap_password");
+  if (validationError.length() == 0 && apPasswordValue.length() > 0) {
+    if (!validateWiFiPasswordValue(apPasswordValue, false) || !copyStringToBuffer(apPasswordValue, nextApPassword, sizeof(nextApPassword))) {
+      validationError = "AP 密码必须为 8-63 位安全字符";
+    }
+  }
+
+  String clientSsidValue = getFormValue(postData, "client_wifi_ssid");
+  if (validationError.length() == 0 && clientSsidValue.length() > 0) {
+    if (!validateWiFiSsidValue(clientSsidValue) || !copyStringToBuffer(clientSsidValue, nextClientSsid, sizeof(nextClientSsid))) {
+      validationError = "客户端 WiFi SSID 非法或过长";
+    }
+  }
+
+  String clientPasswordValue = getFormValue(postData, "client_wifi_password");
+  if (validationError.length() == 0 && clientPasswordValue.length() > 0) {
+    if (!validateWiFiPasswordValue(clientPasswordValue, false) || !copyStringToBuffer(clientPasswordValue, nextClientPassword, sizeof(nextClientPassword))) {
+      validationError = "客户端 WiFi 密码必须为 8-63 位安全字符";
+    }
+  }
+
+  String portalSsidValue = getFormValue(postData, "portal_ssid");
+  if (validationError.length() == 0 && portalSsidValue.length() > 0) {
+    if (!validateWiFiSsidValue(portalSsidValue) || !copyStringToBuffer(portalSsidValue, nextPortalSsid, sizeof(nextPortalSsid))) {
+      validationError = "配网热点 SSID 非法或过长";
+    }
+  }
+
+  String portalPasswordValue = getFormValue(postData, "portal_password");
+  if (validationError.length() == 0 && portalPasswordValue.length() > 0) {
+    if (!validateWiFiPasswordValue(portalPasswordValue, false) || !copyStringToBuffer(portalPasswordValue, nextPortalPassword, sizeof(nextPortalPassword))) {
+      validationError = "配网热点密码必须为 8-63 位安全字符";
+    }
+  }
+
+  if (validationError.length() == 0) {
+    if (!validateWiFiSsidValue(String(nextApSsid)) || !validateWiFiPasswordValue(String(nextApPassword), false) ||
+        !validateWiFiSsidValue(String(nextClientSsid)) || !validateWiFiPasswordValue(String(nextClientPassword), false) ||
+        !validateWiFiSsidValue(String(nextPortalSsid)) || !validateWiFiPasswordValue(String(nextPortalPassword), false)) {
+      validationError = "WiFi 配置不完整或不符合安全策略";
+    }
+  }
+
+  if (validationError.length() > 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Content-Type: text/html");
+    client.println();
+    client.print("<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body><h1>配置保存失败</h1><p>");
+    client.print(validationError);
+    client.print("</p><a href='/config'>返回配置页</a></body></html>");
+    return;
+  }
+
   currentMode = newMode;
   client_id = newClientId;
   uart2BaudRate = newBaud;
   debugMode = newDebugMode;
   logWithTimestamp = newLogTimestamp;
-  
-  // 保存到EEPROM
+  copyStringToBuffer(String(nextApSsid), ap_ssid, sizeof(ap_ssid));
+  copyStringToBuffer(String(nextApPassword), ap_password, sizeof(ap_password));
+  copyStringToBuffer(String(nextClientSsid), client_wifi_ssid, sizeof(client_wifi_ssid));
+  copyStringToBuffer(String(nextClientPassword), client_wifi_password, sizeof(client_wifi_password));
+  copyStringToBuffer(String(nextPortalSsid), wifimanager_ssid, sizeof(wifimanager_ssid));
+  copyStringToBuffer(String(nextPortalPassword), wifimanager_password, sizeof(wifimanager_password));
+
   saveConfigToEEPROM();
   
   // 重启设备
@@ -823,6 +988,7 @@ void handleSaveConfig(WiFiClient client, String request) {
   html += "客户端ID: " + newClientId + "<br>";
   html += "UART2波特率: " + String(newBaud) + "<br>";
   html += "调试模式: " + String(newDebugMode ? "开启" : "关闭") + "<br>";
+  html += "WiFi 凭据: 已按安全策略更新或保持原值<br>";
   html += "</div>";
   html += "</div>";
   html += "</body></html>";
@@ -1029,6 +1195,22 @@ String urlDecode(String input) {
     }
   }
   return result;
+}
+
+String getFormValue(const String &body, const String &key) {
+  String lookup = key + "=";
+  int start = body.indexOf(lookup);
+  if (start < 0) {
+    return "";
+  }
+
+  start += lookup.length();
+  int end = body.indexOf("&", start);
+  if (end < 0) {
+    end = body.length();
+  }
+
+  return urlDecode(body.substring(start, end));
 }
 
 // 处理日志预览（分页版本，流式读取避免栈溢出）
@@ -1421,25 +1603,36 @@ void handleSerialSend(WiFiClient client, String request) {
     lfPos += 3;
     addLf = (request.charAt(lfPos) == '1');
   }
-  
-  if (addCr) data += "\r";
-  if (addLf) data += "\n";
-  
-  if (data.length() > 0) {
+
+  bool explicitFrame = data.length() > 0 && data[0] == SECURITY_FRAME_HEADER_CHAR && data[data.length() - 1] == SECURITY_FRAME_TAIL_CHAR;
+  if (!explicitFrame) {
+    if (addCr) data += "\r";
+    if (addLf) data += "\n";
+  }
+
+  String payload = "";
+  String frame = explicitFrame ? data : buildSecureFrame(data);
+  String errorReason = "";
+  webFrameBuffer = "";
+  bool payloadReady = frame.length() > 0 &&
+                      appendIngressChunk(SECURITY_SOURCE_WEB, -1, (const uint8_t *)frame.c_str(), frame.length(), errorReason) &&
+                      getValidatedPayload(SECURITY_SOURCE_WEB, -1, payload, errorReason);
+
+  if (payloadReady && payload.length() > 0) {
     if (targetUart1) {
       // 发向 UART1
-      uart_write_bytes(UART_NUM_1, data.c_str(), data.length());
+      sendValidatedPayloadToUART(UART_NUM_1, payload);
     } else if (currentMode == MODE_SERVER) {
       if (targetIndex >= 0 && targetIndex < MAX_CLIENTS) {
         selectedClientIndex = targetIndex;
         if (serverClients[targetIndex] && serverClients[targetIndex].connected()) {
-          serverClients[targetIndex].write(data.c_str(), data.length());
+          sendFramedPayloadToClient(serverClients[targetIndex], payload);
         }
       } else {
-        uart_write_bytes(UART_NUM_2, data.c_str(), data.length());
+        sendValidatedPayloadToUART(UART_NUM_2, payload);
       }
     } else {
-      uart_write_bytes(UART_NUM_2, data.c_str(), data.length());
+      sendValidatedPayloadToUART(UART_NUM_2, payload);
     }
   }
   

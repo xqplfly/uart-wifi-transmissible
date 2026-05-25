@@ -35,11 +35,37 @@ void handleUART2ToDebug() {
   handleHighSpeedUART();
 }
 
+void forwardValidatedUSBPayload(const String &payload) {
+  if (!sendValidatedPayloadToUART(UART_NUM_2, payload)) {
+    recordSecurityFailure(usbSecurityState);
+    return;
+  }
+
+  if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
+    for (unsigned int i = 0; i < payload.length(); i++) {
+      queueTCPWrite((uint8_t)payload[i]);
+    }
+  }
+
+  if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
+    enqueueSDLog(payload, client_id, false);
+  }
+}
+
+void processUSBTransparentBytes(const uint8_t *data, size_t len) {
+  String errorReason;
+  if (!appendIngressChunk(SECURITY_SOURCE_USB, -1, data, len, errorReason)) {
+    return;
+  }
+
+  String payload;
+  while (getValidatedPayload(SECURITY_SOURCE_USB, -1, payload, errorReason)) {
+    forwardValidatedUSBPayload(payload);
+  }
+}
+
 void handleUSBSerial() {
   static String commandBuffer = "";
-  static String logBuffer = "";
-  static uint8_t txBuffer[128];
-  int txLen = 0;
   
   while (Serial.available()) {
     char incoming = Serial.read();
@@ -54,19 +80,7 @@ void handleUSBSerial() {
     if (collectingAT && incoming != '\r' && incoming != '\n') {
       commandBuffer += incoming;
       if (!isATPlusCandidate(commandBuffer) && !hasATPlusPrefix(commandBuffer)) {
-        for (int i = 0; i < commandBuffer.length(); i++) {
-          if (txLen >= (int)sizeof(txBuffer)) {
-            uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
-            txLen = 0;
-          }
-          txBuffer[txLen++] = (uint8_t)commandBuffer[i];
-          if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
-            queueTCPWrite((uint8_t)commandBuffer[i]);
-          }
-        }
-        if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
-          logBuffer += commandBuffer;
-        }
+        processUSBTransparentBytes((const uint8_t *)commandBuffer.c_str(), commandBuffer.length());
         commandBuffer = "";
       }
       continue;
@@ -82,46 +96,24 @@ void handleUSBSerial() {
       }
 
       commandBuffer += incoming;
-      if (commandBuffer.length() > UART_BUFFER_SIZE) {
+      if (commandBuffer.length() > 64) {
+        recordSecurityFailure(usbSecurityState);
         commandBuffer = "";
       }
       continue;
     }
 
-    if (txLen >= (int)sizeof(txBuffer)) {
-      uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
-      txLen = 0;
-    }
-
-    txBuffer[txLen++] = (uint8_t)incoming;
-    if (currentMode == MODE_SERVER && selectedClientIndex >= 0) {
-      queueTCPWrite((uint8_t)incoming);
-    }
-
-    if (currentMode == MODE_CLIENT && logToSD && sdCardReady) {
-      if (incoming == '\n') {
-        String command = logBuffer;
-        command.trim();
-        if (command.length() > 0) {
-          enqueueSDLog(command, client_id, false);
-        }
-        logBuffer = "";
-      } else if (incoming != '\r') {
-        logBuffer += incoming;
-      }
-    }
-    
-    // 限制缓冲区大小
-    if (commandBuffer.length() > UART_BUFFER_SIZE) {
+    if (commandBuffer.length() > 0) {
+      processUSBTransparentBytes((const uint8_t *)commandBuffer.c_str(), commandBuffer.length());
       commandBuffer = "";
     }
-    if (logBuffer.length() > UART_BUFFER_SIZE) {
-      logBuffer = "";
-    }
-  }
 
-  if (txLen > 0) {
-    uart_write_bytes(UART_NUM_2, (const char *)txBuffer, txLen);
+    if (commandBuffer.length() > UART_BUFFER_SIZE) {
+      recordSecurityFailure(usbSecurityState);
+      commandBuffer = "";
+    }
+
+    processUSBTransparentBytes((const uint8_t *)&incoming, 1);
   }
 }
 
@@ -204,9 +196,8 @@ void handleCommand(String command) {
     Serial.println("System will restart...");
     ESP.restart();
   } else if (command == "AT+RAW") {
-    rawTransmitMode = true;
-    Serial.println("OK RAW mode enabled - data sent directly to UART2");
-    Serial.println("Type +++ or ESC to exit");
+    rawTransmitMode = false;
+    Serial.println("X RAW mode disabled by security policy; use secure frames instead");
   } else if (command == "AT+EXIT" || command == "+++") {
     if (rawTransmitMode) {
       rawTransmitMode = false;
@@ -267,7 +258,7 @@ void handleCommand(String command) {
       for (int i = 0; i < MAX_CLIENTS; i++) {
         if (serverClients[i] && serverClients[i].connected()) {
           String selected = (selectedClientIndex == i) ? " [Selected]" : "";
-          Serial.println("  Client " + String(i) + ": " + serverClients[i].remoteIP().toString() + selected);
+          Serial.println("  Client " + String(i) + ": " + maskIpAddress(serverClients[i].remoteIP()) + selected);
         }
       }
       if (selectedClientIndex >= 0) {
@@ -277,10 +268,7 @@ void handleCommand(String command) {
       Serial.println("X This command is only available in server mode");
     }
   } else {
-    // Unknown command, send to UART2
-    String sendData = command + "\r\n";
-    uart_write_bytes(UART_NUM_2, sendData.c_str(), sendData.length());
-    Serial.println("[Sent] " + command);
+    Serial.println("X Unsupported command");
   }
 }
 
@@ -446,12 +434,11 @@ void printHelp() {
   Serial.println("  AT+RESTART      - Restart system");
   Serial.println("  AT+CONFIG       - Enter WiFi config mode (non-blocking)");
   Serial.println("  AT+EXITCONFIG   - Exit WiFi config mode");
-  Serial.println("  AT+RAW          - Enter raw transparent mode (AT+EXIT to exit)");
+  Serial.println("  Transparent data: send @<len>:<payload># secure frames only");
   Serial.println("  AT+POWER=ON     - Power ON operation");
   Serial.println("  AT+POWER=OFF    - Power OFF operation");
   Serial.println("  AT+POWER=TRIGGER - Trigger shutdown hint");
   Serial.println("  AT+RESET=CPU    - Reset CPU");
-  Serial.println("  Other commands  - Send to UART2");
   Serial.println("\nLong press button 5s: Reset to default");
   Serial.println("Short press button 2s: Switch mode");
 }
