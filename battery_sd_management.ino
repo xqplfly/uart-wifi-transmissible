@@ -1,5 +1,11 @@
 // ==================== Battery Monitor ====================
 
+// 电池采样校准参数
+// NOTE: 这里默认按 2:1 分压 + ESP32 ADC 3.3V 基准换算。
+// 如果实测串口电压明显偏高/偏低，请优先根据你的分压电阻和实测值微调 BATTERY_DIVIDER_RATIO。
+#define BATTERY_ADC_REFERENCE_VOLTAGE  3.3f
+#define BATTERY_DIVIDER_RATIO           2.0f
+
 // 过滤ANSI转义序列
 String filterAnsiEscape(String input) {
   if (input.length() == 0) return input;
@@ -35,15 +41,41 @@ String filterAnsiEscape(String input) {
   return output;
 }
 
+float getBatteryPercentage(float voltage) {
+  // 以锂电池 3.7V 标准进行展示：
+  // 4.20V 视为 100%，3.70V 视为约 50%，3.00V 视为 0%
+  const float batteryFullVoltage = 4.20f;
+  const float batteryNominalVoltage = 3.70f;
+  const float batteryEmptyVoltage = 3.00f;
+
+  float percentage = 0.0f;
+  if (voltage >= batteryNominalVoltage) {
+    percentage = 50.0f + (voltage - batteryNominalVoltage) * 50.0f / (batteryFullVoltage - batteryNominalVoltage);
+  } else {
+    percentage = (voltage - batteryEmptyVoltage) * 50.0f / (batteryNominalVoltage - batteryEmptyVoltage);
+  }
+
+  if (percentage > 100.0f) percentage = 100.0f;
+  if (percentage < 0.0f) percentage = 0.0f;
+  return percentage;
+}
+
 void checkBattery() {
   int adcValue = analogRead(BATTERY_ADC_PIN);
-  batteryVoltage = (adcValue / 4095.0) * 3.3 * 2;
+  float adcVoltage = (adcValue / 4095.0f) * BATTERY_ADC_REFERENCE_VOLTAGE;
+  batteryVoltage = adcVoltage * BATTERY_DIVIDER_RATIO;
+  float batteryPercent = getBatteryPercentage(batteryVoltage);
+
+  if (debugMode) {
+    Serial.printf("Battery ADC=%d, ADC Voltage=%.3fV, Battery=%.3fV, Percent=%.0f%%\n",
+                  adcValue, adcVoltage, batteryVoltage, batteryPercent);
+  }
 
   if (batteryVoltage < BATTERY_LOW_VOLTAGE && batteryVoltage > 2.0) {
     if (!lowBattery) {
       lowBattery = true;
       if (debugMode) {
-        Serial.println("! Low battery warning! Voltage: " + String(batteryVoltage) + "V");
+        Serial.println("! Low battery warning! Voltage: " + String(batteryVoltage, 3) + "V, " + String((int)batteryPercent) + "%");
       }
       for (int i = 0; i < 5; i++) {
         setLED(CRGB(255, 0, 0));
