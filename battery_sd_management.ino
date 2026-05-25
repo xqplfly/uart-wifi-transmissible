@@ -284,6 +284,7 @@ int sdQueueHead = 0;
 int sdQueueTail = 0;
 int sdQueueCount = 0;
 unsigned long lastSDWriteTime = 0;
+portMUX_TYPE sdQueueMux = portMUX_INITIALIZER_UNLOCKED;
 
 String getLogTimestamp() {
   // 如果有RTC时间可以使用，应该先检查RTC
@@ -302,49 +303,67 @@ String getLogTimestamp() {
 
 bool enqueueSDLog(String data, String clientId, bool isServer, uint8_t uartChannel) {
   if (!sdCardReady || data.length() == 0) return false;
-  if (sdQueueCount >= SD_WRITE_QUEUE_SIZE) return false;
-  
-  // 过滤ANSI转义序列后再保存
+
+  // 过滤ANSI转义序列并添加时间戳（在临界区之外完成，减少锁占用时间）
   String filteredData = filterAnsiEscape(data);
-  
-  // 如果开启时间戳，在数据前添加时间
   if (logWithTimestamp) {
     String timestamp = getLogTimestamp();
     filteredData = timestamp + " " + filteredData;
   }
-  
+
+  portENTER_CRITICAL(&sdQueueMux);
+  if (sdQueueCount >= SD_WRITE_QUEUE_SIZE) {
+    portEXIT_CRITICAL(&sdQueueMux);
+    return false;
+  }
+
   sdWriteQueue[sdQueueHead].data = filteredData;
   sdWriteQueue[sdQueueHead].clientId = clientId;
   sdWriteQueue[sdQueueHead].isServer = isServer;
   sdWriteQueue[sdQueueHead].uartChannel = uartChannel;
   sdQueueHead = (sdQueueHead + 1) % SD_WRITE_QUEUE_SIZE;
   sdQueueCount++;
+  portEXIT_CRITICAL(&sdQueueMux);
   return true;
 }
 
 void processSDWriteQueue() {
   if (!sdCardReady) return;
-  if (sdQueueCount == 0) return;
-  
+
   unsigned long now = millis();
-  if (now - lastSDWriteTime < SD_WRITE_INTERVAL_MS && sdQueueCount < SD_WRITE_BATCH_SIZE) return;
-  
+  portENTER_CRITICAL(&sdQueueMux);
+  if (sdQueueCount == 0) {
+    portEXIT_CRITICAL(&sdQueueMux);
+    return;
+  }
+  if (now - lastSDWriteTime < SD_WRITE_INTERVAL_MS && sdQueueCount < SD_WRITE_BATCH_SIZE) {
+    portEXIT_CRITICAL(&sdQueueMux);
+    return;
+  }
+
   lastSDWriteTime = now;
-  
+
   int batchSize = min(sdQueueCount, SD_WRITE_BATCH_SIZE);
-  
+
+  // 为减少临界区内的工作量，先把要写入的条目复制到本地数组，然后释放锁进行实际写入
+  SDLogEntry batch[SD_WRITE_BATCH_SIZE];
   for (int i = 0; i < batchSize; i++) {
-    SDLogEntry entry = sdWriteQueue[sdQueueTail];
+    batch[i] = sdWriteQueue[sdQueueTail];
     sdQueueTail = (sdQueueTail + 1) % SD_WRITE_QUEUE_SIZE;
     sdQueueCount--;
-    
+  }
+  portEXIT_CRITICAL(&sdQueueMux);
+
+  for (int i = 0; i < batchSize; i++) {
+    SDLogEntry &entry = batch[i];
+
     char path[128];
     char safeClientId[32];
     char clientDir[64];
-    
+
     entry.clientId.toCharArray(safeClientId, sizeof(safeClientId));
     sanitizeFilenameInPlace(safeClientId);
-    
+
     if (entry.uartChannel == 1) {
       // UART1 存入独立目录，与 UART2 完全隔离
       if (entry.isServer) {
@@ -367,7 +386,7 @@ void processSDWriteQueue() {
                  clientDir, logFileName.c_str(), getDateString().c_str());
       }
     }
-    
+
     File file = SD.open(path, FILE_APPEND);
     if (file) {
       file.println(entry.data);
